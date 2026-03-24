@@ -26,8 +26,10 @@ const options = {
     },
     security: [{ bearerAuth: [] }],
   },
-  // This tells swagger-jsdoc where to find your route files
-  apis: ['./src/modules/**/*.routes.js'],
+  apis: [
+    './src/modules/**/*.routes.js',
+    './src/routes/*.routes.js',
+  ],
 };
 
 const swaggerSpec = swaggerJsdoc(options);

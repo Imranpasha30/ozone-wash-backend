@@ -8,6 +8,9 @@ const complianceRoutes = require('../modules/compliance/compliance.routes');
 const ecoScoreRoutes = require('../modules/ecoscore/ecoscore.routes');
 const certificateRoutes = require('../modules/certificates/certificate.routes');
 const amcRoutes = require('../modules/amc/amc.routes');
+const uploadRoutes = require('./upload.routes');
+const paymentRoutes = require('../modules/payments/payment.routes');
+
 
 router.use('/auth', authRoutes);
 router.use('/bookings', bookingRoutes);
@@ -16,6 +19,9 @@ router.use('/compliance', complianceRoutes);
 router.use('/ecoscore', ecoScoreRoutes);
 router.use('/certificates', certificateRoutes);
 router.use('/amc', amcRoutes);
+router.use('/upload', uploadRoutes);
+router.use('/payments', paymentRoutes);
+
 
 
 router.get('/health', (req, res) => {
