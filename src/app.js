@@ -44,6 +44,11 @@ if (process.env.NODE_ENV === 'development') {
   });
 }
 
+
+app.use('/certificates', express.static(
+  require('path').join(process.cwd(), 'certificates')
+));
+
 // Swagger UI — http://localhost:3000/api-docs
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
   customSiteTitle: 'Ozone Wash API Docs',
