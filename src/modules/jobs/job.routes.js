@@ -20,6 +20,23 @@ const assignTeamValidation = [
     .isUUID().withMessage('Team ID must be a valid UUID'),
 ];
 
+const transferValidation = [
+  body('new_team_id')
+    .notEmpty().withMessage('New team ID is required')
+    .isUUID().withMessage('New team ID must be a valid UUID'),
+  body('reason')
+    .optional()
+    .trim()
+    .isLength({ max: 500 }).withMessage('Reason must be under 500 characters'),
+];
+
+const otpValidation = [
+  body('otp')
+    .notEmpty().withMessage('OTP is required')
+    .isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
+    .isNumeric().withMessage('OTP must be numeric'),
+];
+
 // Query param validation for admin GET /jobs
 const listJobsValidation = [
   query('status')
@@ -51,6 +68,15 @@ router.patch('/:id/complete', authenticate, requireRole('admin', 'field_team'), 
 // Field team routes
 router.get('/my', authenticate, requireRole('field_team'), JobController.getMyJobs);
 router.patch('/:id/start', authenticate, requireRole('field_team'), JobController.startJob);
+
+// OTP routes (field team)
+router.post('/:id/generate-start-otp', authenticate, requireRole('field_team'), JobController.generateStartOtp);
+router.post('/:id/verify-start-otp', authenticate, requireRole('field_team'), otpValidation, JobController.verifyStartOtp);
+router.post('/:id/generate-end-otp', authenticate, requireRole('field_team'), JobController.generateEndOtp);
+router.post('/:id/verify-end-otp', authenticate, requireRole('field_team'), otpValidation, JobController.verifyEndOtp);
+
+// Transfer (field team or admin)
+router.post('/:id/transfer', authenticate, requireRole('field_team', 'admin'), transferValidation, JobController.transferJob);
 
 // Shared (customer, field team, admin)
 router.get('/:id', authenticate, JobController.getJob);

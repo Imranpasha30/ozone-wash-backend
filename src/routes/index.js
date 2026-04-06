@@ -10,6 +10,7 @@ const certificateRoutes = require('../modules/certificates/certificate.routes');
 const amcRoutes = require('../modules/amc/amc.routes');
 const uploadRoutes = require('./upload.routes');
 const paymentRoutes = require('../modules/payments/payment.routes');
+const incidentRoutes = require('../modules/incidents/incident.routes');
 
 
 router.use('/auth', authRoutes);
@@ -21,7 +22,7 @@ router.use('/certificates', certificateRoutes);
 router.use('/amc', amcRoutes);
 router.use('/upload', uploadRoutes);
 router.use('/payments', paymentRoutes);
-
+router.use('/incidents', incidentRoutes);
 
 
 router.get('/health', (req, res) => {

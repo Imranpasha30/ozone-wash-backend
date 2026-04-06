@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   location_lat     DECIMAL,
   location_lng     DECIMAL,
   notes            TEXT,
+  start_otp            VARCHAR(6),
+  end_otp              VARCHAR(6),
+  start_otp_verified   BOOLEAN DEFAULT false,
+  end_otp_verified     BOOLEAN DEFAULT false,
   created_at       TIMESTAMP DEFAULT NOW(),
   updated_at       TIMESTAMP DEFAULT NOW()
 );

@@ -108,6 +108,55 @@ const JobRepository = {
     );
   },
 
+  // ── OTP Methods ──────────────────────────────────────────────────────────
+
+  storeStartOtp: async (jobId, otp) => {
+    const result = await db.query(
+      `UPDATE jobs SET start_otp = $1, start_otp_verified = false, updated_at = NOW()
+       WHERE id = $2 RETURNING *`,
+      [otp, jobId]
+    );
+    return result.rows[0];
+  },
+
+  storeEndOtp: async (jobId, otp) => {
+    const result = await db.query(
+      `UPDATE jobs SET end_otp = $1, end_otp_verified = false, updated_at = NOW()
+       WHERE id = $2 RETURNING *`,
+      [otp, jobId]
+    );
+    return result.rows[0];
+  },
+
+  verifyStartOtp: async (jobId) => {
+    const result = await db.query(
+      `UPDATE jobs SET start_otp_verified = true, status = 'in_progress', started_at = NOW(), updated_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [jobId]
+    );
+    return result.rows[0];
+  },
+
+  verifyEndOtp: async (jobId) => {
+    const result = await db.query(
+      `UPDATE jobs SET end_otp_verified = true, updated_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [jobId]
+    );
+    return result.rows[0];
+  },
+
+  // ── Transfer ────────────────────────────────────────────────────────────
+
+  transferJob: async (jobId, newTeamId, reason) => {
+    const result = await db.query(
+      `UPDATE jobs SET assigned_team_id = $1, notes = COALESCE(notes, '') || $2, updated_at = NOW()
+       WHERE id = $3 RETURNING *`,
+      [newTeamId, `\n[Transfer] Reason: ${reason}`, jobId]
+    );
+    return result.rows[0];
+  },
+
   getTeamList: async () => {
     const result = await db.query(
       `SELECT id, name, phone FROM users WHERE role = 'field_team'`
