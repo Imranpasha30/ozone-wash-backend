@@ -41,6 +41,12 @@ const createBookingValidation = [
   body('amc_plan')
     .optional()
     .isIn(['monthly', 'bimonthly', 'quarterly', '4month', 'halfyearly', 'yearly']).withMessage('Invalid AMC plan'),
+  body('lat')
+    .optional()
+    .isFloat({ min: -90, max: 90 }).withMessage('Invalid latitude'),
+  body('lng')
+    .optional()
+    .isFloat({ min: -180, max: 180 }).withMessage('Invalid longitude'),
 ];
 
 // Query param validation for admin GET /bookings
