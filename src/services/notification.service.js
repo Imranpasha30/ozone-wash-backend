@@ -99,23 +99,42 @@ const NotificationService = {
     }
   },
 
-  // ── SMS (Fast2SMS — Primary Indian OTP Provider) ─────────────────────
-  // Provider: https://fast2sms.com — cheapest, instant OTP, no DLT needed for testing
-  // Get API key from: fast2sms.com → Dashboard → Dev API
-  // Set SMS_PROVIDER=fast2sms in .env (default)
-  //
-  // Alt provider: MSG91 — enterprise-grade, DLT compliant
-  // Set SMS_PROVIDER=msg91, SMS_API_KEY=authkey, SMS_TEMPLATE_ID=your_template_id
-  sendSMS: async (phone, message) => {
+  // ── SMS ───────────────────────────────────────────────────────────────
+  // Providers: authkey (default), fast2sms, msg91
+  // Set SMS_PROVIDER in .env to switch
+  sendSMS: async (phone, message, otp = null) => {
     try {
       if (!process.env.SMS_API_KEY) {
-        console.log(`📩 [SMS DEV] To: ${phone} | Message: ${message}`);
+        console.log(`[SMS DEV] To: ${phone} | Message: ${message}`);
         return { success: true, dev: true };
       }
 
-      const provider = process.env.SMS_PROVIDER || 'fast2sms';
+      const provider = process.env.SMS_PROVIDER || 'authkey';
+      // Clean phone — remove +91, spaces, dashes
+      const cleanPhone = phone.replace(/^\+?91/, '').replace(/[\s-]/g, '').slice(-10);
 
-      if (provider === 'fast2sms') {
+      if (provider === 'authkey') {
+        // Authkey.io — https://authkey.io
+        const params = {
+          authkey: process.env.SMS_API_KEY,
+          mobile: cleanPhone,
+          country_code: '91',
+          sid: process.env.AUTHKEY_SID || process.env.SMS_TEMPLATE_ID,
+          company: process.env.AUTHKEY_COMPANY || 'Ozone Wash',
+        };
+        if (otp) params.otp = otp;
+
+        const response = await axios.get('https://api.authkey.io/request', { params, timeout: 30000 });
+        const result = response.data;
+
+        if (result?.Message?.includes('Submitted')) {
+          console.log(`[SMS] Authkey sent to ${cleanPhone} (LogID: ${result.LogID})`);
+          return { success: true, data: result };
+        }
+        console.error('[SMS] Authkey response:', result);
+        return { success: false, error: result?.Message || 'Unknown error' };
+
+      } else if (provider === 'fast2sms') {
         const response = await axios.post(
           'https://www.fast2sms.com/dev/bulkV2',
           {
@@ -124,7 +143,7 @@ const NotificationService = {
             message: process.env.SMS_TEMPLATE_ID || message,
             variables_values: message,
             flash: '0',
-            numbers: phone,
+            numbers: cleanPhone,
           },
           { headers: { authorization: process.env.SMS_API_KEY } }
         );
@@ -135,7 +154,7 @@ const NotificationService = {
           'https://control.msg91.com/api/v5/flow/',
           {
             template_id: process.env.SMS_TEMPLATE_ID,
-            recipients: [{ mobiles: `91${phone}`, otp: message }],
+            recipients: [{ mobiles: `91${cleanPhone}`, otp: otp || message }],
           },
           {
             headers: {
@@ -147,11 +166,10 @@ const NotificationService = {
         return { success: true, data: response.data };
 
       } else {
-        // Generic fallback — POST to SMS_API_URL with common params
         const response = await axios.post(process.env.SMS_API_URL, {
           apikey: process.env.SMS_API_KEY,
           sender: process.env.SMS_SENDER_ID,
-          to: phone,
+          to: cleanPhone,
           message,
         });
         return { success: true, data: response.data };
@@ -168,7 +186,7 @@ const NotificationService = {
     const message = `${otpCode} is your Ozone Wash OTP. Valid for 10 minutes. Do not share with anyone. -OZNWSH`;
 
     await Promise.allSettled([
-      NotificationService.sendSMS(phone, message),
+      NotificationService.sendSMS(phone, message, otpCode),
       NotificationService.sendWhatsApp(phone, 'otp_login', [
         { name: 'otp', value: otpCode },
         { name: 'validity', value: '10 minutes' },
