@@ -93,8 +93,8 @@ const JobService = {
   },
 
   // Get today's stats (admin dashboard)
-  getTodayStats: async () => {
-    return await JobRepository.getTodayStats();
+  getTodayStats: async (teamId = null) => {
+    return await JobRepository.getTodayStats(teamId);
   },
 
 };

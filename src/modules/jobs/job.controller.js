@@ -1,5 +1,7 @@
 const { validationResult } = require('express-validator');
 const JobService = require('./job.service');
+const JobRepository = require('./job.repository');
+const NotificationService = require('../../services/notification.service');
 const { sendSuccess, sendError } = require('../../utils/response');
 
 const JobController = {
@@ -34,7 +36,9 @@ const JobController = {
   // GET /api/v1/jobs/stats (admin dashboard)
   getTodayStats: async (req, res, next) => {
     try {
-      const stats = await JobService.getTodayStats();
+      // Field team gets their own stats; admin gets global stats
+      const teamId = req.user.role === 'field_team' ? req.user.id : null;
+      const stats = await JobService.getTodayStats(teamId);
       return sendSuccess(res, { stats });
     } catch (err) {
       next(err);
@@ -74,6 +78,14 @@ const JobController = {
       }
       const { team_id } = req.body;
       const job = await JobService.assignTeam(req.params.id, team_id);
+      JobRepository.findById(req.params.id).then(fullJob => {
+        if (fullJob) {
+          NotificationService.onTeamAssigned(
+            { fcm_token: fullJob.team_fcm_token },
+            fullJob
+          );
+        }
+      }).catch(() => {});
       return sendSuccess(res, { job }, 'Team assigned successfully');
     } catch (err) {
       next(err);
@@ -84,6 +96,14 @@ const JobController = {
   startJob: async (req, res, next) => {
     try {
       const job = await JobService.startJob(req.params.id, req.user.id);
+      JobRepository.findById(req.params.id).then(fullJob => {
+        if (fullJob) {
+          NotificationService.onJobStarted(
+            { fcm_token: fullJob.customer_fcm_token },
+            fullJob
+          );
+        }
+      }).catch(() => {});
       return sendSuccess(res, { job }, 'Job started successfully');
     } catch (err) {
       next(err);

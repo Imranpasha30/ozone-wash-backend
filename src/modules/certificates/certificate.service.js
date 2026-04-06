@@ -7,6 +7,7 @@ const fs = require('fs');
 const CertificateRepository = require('./certificate.repository');
 const EcoScoreRepository = require('../ecoscore/ecoscore.repository');
 const JobRepository = require('../jobs/job.repository');
+const { R2Service } = require('../../services/r2.service');
 
 const CertificateService = {
 
@@ -76,18 +77,21 @@ const CertificateService = {
       validUntil,
     });
 
-    // 8. Save PDF locally (in production this goes to Cloudflare R2)
-    const outputDir = path.join(process.cwd(), 'certificates');
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
+    // 8. Upload PDF — R2 in production, local filesystem in development
+    const fileName = `cert_${cert.id}.pdf`;
+    let certUrl;
+
+    if (process.env.NODE_ENV === 'production' && process.env.R2_ACCOUNT_ID && process.env.R2_ACCOUNT_ID !== 'your-account-id') {
+      const uploaded = await R2Service.uploadFile(pdfBuffer, fileName, 'certificates');
+      certUrl = uploaded.url;
+    } else {
+      const outputDir = path.join(process.cwd(), 'certificates');
+      if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+      fs.writeFileSync(path.join(outputDir, fileName), pdfBuffer);
+      certUrl = `${process.env.APP_URL || 'http://localhost:3000'}/certificates/${fileName}`;
     }
 
-    const fileName = `cert_${cert.id}.pdf`;
-    const filePath = path.join(outputDir, fileName);
-    fs.writeFileSync(filePath, pdfBuffer);
-
-    // 9. Update certificate URL in DB
-    const certUrl = `${process.env.APP_URL || 'http://localhost:3000'}/certificates/${fileName}`;
+    // 9. Update certificate with final URL (ON CONFLICT updates the existing row)
     await CertificateRepository.create({
       job_id: jobId,
       eco_score: ecoMetrics.eco_score,

@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ozone Wash — App Architecture & UI Mockup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #1a1a2e; }
+
+  /* Header */
+  .header { background: #1a1a2e; color: white; padding: 24px 40px; display: flex; align-items: center; gap: 16px; }
+  .header-logo { font-size: 32px; }
+  .header-title { font-size: 24px; font-weight: 700; letter-spacing: 2px; }
+  .header-sub { font-size: 12px; color: #7f8c8d; margin-top: 4px; }
+
+  /* Nav Tabs */
+  .nav { background: white; border-bottom: 1px solid #e0e0e0; padding: 0 40px; display: flex; gap: 0; }
+  .nav-tab { padding: 16px 24px; font-size: 14px; font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent; color: #7f8c8d; transition: all 0.2s; }
+  .nav-tab.active { color: #1a1a2e; border-bottom-color: #2ecc71; }
+  .nav-tab:hover { color: #1a1a2e; }
+
+  /* Content */
+  .content { padding: 32px 40px; max-width: 1400px; margin: 0 auto; }
+
+  /* Section */
+  .section { display: none; }
+  .section.active { display: block; }
+
+  /* Architecture */
+  .arch-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 32px; }
+  .arch-card { background: white; border-radius: 16px; padding: 24px; border: 1px solid #e8e8e8; }
+  .arch-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .arch-card-icon { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 24px; }
+  .arch-card-title { font-size: 16px; font-weight: 700; color: #1a1a2e; }
+  .arch-card-sub { font-size: 12px; color: #7f8c8d; }
+  .tech-badge { display: inline-block; background: #f0f2f5; color: #1a1a2e; font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 20px; margin: 3px; }
+  .tech-badge.green { background: #e8f8f0; color: #1a8a4a; }
+  .tech-badge.blue { background: #e8f0ff; color: #1a4a8a; }
+  .tech-badge.orange { background: #fff3e0; color: #e65100; }
+
+  /* Flow */
+  .flow-container { background: white; border-radius: 16px; padding: 32px; margin-bottom: 24px; }
+  .flow-title { font-size: 18px; font-weight: 700; margin-bottom: 24px; color: #1a1a2e; }
+  .flow-steps { display: flex; align-items: center; gap: 0; flex-wrap: wrap; }
+  .flow-step { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 100px; }
+  .flow-step-circle { width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; }
+  .flow-step-label { font-size: 12px; font-weight: 600; text-align: center; color: #1a1a2e; max-width: 90px; }
+  .flow-step-sub { font-size: 11px; color: #7f8c8d; text-align: center; max-width: 90px; }
+  .flow-arrow { font-size: 20px; color: #7f8c8d; padding: 0 4px; margin-bottom: 32px; }
+
+  /* Screens */
+  .screens-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+  .screen-container { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .screen-label { font-size: 13px; font-weight: 700; color: #1a1a2e; text-align: center; }
+  .screen-sub { font-size: 11px; color: #7f8c8d; text-align: center; }
+  .phone { width: 200px; height: 400px; background: #1a1a2e; border-radius: 32px; padding: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.2); position: relative; overflow: hidden; }
+  .phone-screen { width: 100%; height: 100%; background: white; border-radius: 22px; overflow: hidden; display: flex; flex-direction: column; }
+  .status-bar { background: #1a1a2e; height: 24px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; }
+  .status-time { color: white; font-size: 9px; font-weight: 700; }
+  .status-icons { color: white; font-size: 9px; }
+
+  /* Screen specific styles */
+  .s-header { padding: 12px; }
+  .s-title { font-size: 14px; font-weight: 700; color: #1a1a2e; }
+  .s-sub { font-size: 10px; color: #7f8c8d; }
+  .s-body { flex: 1; padding: 8px 12px; overflow: hidden; }
+  .s-btn { background: #2ecc71; color: white; border-radius: 10px; padding: 10px; text-align: center; font-size: 12px; font-weight: 700; margin: 6px 0; }
+  .s-btn-outline { border: 1.5px solid #2ecc71; color: #2ecc71; border-radius: 10px; padding: 8px; text-align: center; font-size: 11px; font-weight: 600; margin: 4px 0; }
+  .s-card { background: #f8f9fa; border-radius: 10px; padding: 10px; margin: 6px 0; }
+  .s-card-title { font-size: 11px; font-weight: 700; color: #1a1a2e; }
+  .s-card-sub { font-size: 10px; color: #7f8c8d; margin-top: 2px; }
+  .s-badge { display: inline-block; padding: 3px 8px; border-radius: 20px; font-size: 9px; font-weight: 700; }
+  .badge-green { background: #e8f8f0; color: #1a8a4a; }
+  .badge-orange { background: #fff3e0; color: #e65100; }
+  .badge-blue { background: #e8f0ff; color: #1a4a8a; }
+  .badge-gold { background: #fff8e0; color: #c49a00; }
+  .s-tab-bar { background: #1a1a2e; height: 48px; display: flex; align-items: center; justify-content: space-around; padding: 0 8px; }
+  .s-tab { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .s-tab-icon { font-size: 14px; }
+  .s-tab-label { font-size: 8px; color: #7f8c8d; }
+  .s-tab-label.active { color: #2ecc71; }
+  .s-otp-box { display: inline-block; width: 24px; height: 30px; border: 1.5px solid #2ecc71; border-radius: 6px; margin: 2px; text-align: center; line-height: 30px; font-size: 14px; font-weight: 700; color: #1a1a2e; }
+  .s-step { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #f0f0f0; }
+  .s-step-num { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; flex-shrink: 0; }
+  .step-done { background: #2ecc71; color: white; }
+  .step-pending { background: #f0f0f0; color: #7f8c8d; }
+  .s-step-text { font-size: 10px; color: #1a1a2e; font-weight: 600; }
+  .s-progress { height: 6px; background: #f0f0f0; border-radius: 3px; margin: 8px 0; }
+  .s-progress-fill { height: 100%; background: #2ecc71; border-radius: 3px; }
+  .s-eco-circle { width: 60px; height: 60px; border-radius: 50%; background: #f39c12; display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 0 auto 8px; }
+  .s-eco-score { font-size: 18px; font-weight: 700; color: white; line-height: 1; }
+  .s-eco-label { font-size: 8px; color: white; font-weight: 600; }
+  .s-input { border: 1.5px solid #e0e0e0; border-radius: 8px; padding: 8px 10px; font-size: 11px; color: #1a1a2e; margin: 4px 0; width: 100%; }
+  .divider { height: 1px; background: #f0f0f0; margin: 8px 0; }
+  .s-logo { text-align: center; padding: 16px 0 8px; }
+  .s-logo-icon { font-size: 28px; }
+  .s-logo-text { font-size: 13px; font-weight: 700; letter-spacing: 2px; color: #1a1a2e; margin-top: 4px; }
+  .s-logo-sub { font-size: 9px; color: #7f8c8d; margin-top: 2px; }
+  .row { display: flex; align-items: center; justify-content: space-between; margin: 4px 0; }
+  .price-row { display: flex; justify-content: space-between; font-size: 10px; padding: 3px 0; }
+  .price-total { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; border-top: 1px solid #e0e0e0; padding-top: 6px; margin-top: 4px; }
+  .map-placeholder { background: #e8f0e8; border-radius: 10px; height: 80px; display: flex; align-items: center; justify-content: center; font-size: 20px; margin: 6px 0; }
+  .cert-header { background: #1a1a2e; padding: 12px; text-align: center; }
+  .cert-title { color: white; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+  .cert-body { padding: 10px; }
+  .qr-placeholder { width: 50px; height: 50px; background: #f0f0f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 24px; margin: 0 auto 6px; }
+
+  /* API Table */
+  .api-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .api-card { background: white; border-radius: 16px; padding: 24px; }
+  .api-title { font-size: 16px; font-weight: 700; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  .endpoint { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #f5f5f5; }
+  .method { font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 4px; min-width: 44px; text-align: center; }
+  .get { background: #e8f0ff; color: #1a4a8a; }
+  .post { background: #e8f8f0; color: #1a8a4a; }
+  .patch { background: #fff3e0; color: #e65100; }
+  .endpoint-path { font-size: 11px; font-family: monospace; color: #1a1a2e; }
+  .endpoint-desc { font-size: 10px; color: #7f8c8d; margin-left: auto; }
+
+  /* DB Schema */
+  .db-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .db-table { background: white; border-radius: 12px; padding: 16px; border-top: 3px solid #2ecc71; }
+  .db-table-name { font-size: 13px; font-weight: 700; color: #1a1a2e; margin-bottom: 10px; font-family: monospace; }
+  .db-field { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid #f5f5f5; font-size: 11px; }
+  .db-field-name { font-family: monospace; color: #1a1a2e; flex: 1; }
+  .db-field-type { color: #7f8c8d; font-size: 10px; }
+  .db-pk { background: #fff8e0; color: #c49a00; font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
+  .db-fk { background: #e8f0ff; color: #1a4a8a; font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
+
+  /* Status indicators */
+  .status-done { color: #2ecc71; font-weight: 700; font-size: 12px; }
+  .status-pending { color: #f39c12; font-weight: 700; font-size: 12px; }
+
+  /* Responsive */
+  @media (max-width: 1100px) {
+    .screens-grid { grid-template-columns: repeat(2, 1fr); }
+    .arch-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-logo">🚿</div>
+  <div>
+    <div class="header-title">OZONE WASH</div>
+    <div class="header-sub">App Architecture & UI Mockup — VijRam Health Sense Pvt. Ltd.</div>
+  </div>
+  <div style="margin-left: auto; display: flex; gap: 8px;">
+    <span class="tech-badge green">React Native</span>
+    <span class="tech-badge blue">Node.js</span>
+    <span class="tech-badge orange">PostgreSQL</span>
+  </div>
+</div>
+
+<div class="nav">
+  <div class="nav-tab active" onclick="showSection('overview')">Overview</div>
+  <div class="nav-tab" onclick="showSection('screens')">UI Screens</div>
+  <div class="nav-tab" onclick="showSection('navigation')">Navigation Flow</div>
+  <div class="nav-tab" onclick="showSection('api')">API Endpoints</div>
+  <div class="nav-tab" onclick="showSection('database')">Database</div>
+</div>
+
+<div class="content">
+
+  <!-- OVERVIEW -->
+  <div class="section active" id="section-overview">
+    <div class="arch-grid">
+      <div class="arch-card">
+        <div class="arch-card-header">
+          <div class="arch-card-icon" style="background: #e8f8f0; font-size: 28px;">📱</div>
+          <div>
+            <div class="arch-card-title">React Native App</div>
+            <div class="arch-card-sub">Customer + Field Team</div>
+          </div>
+          <span class="status-done" style="margin-left: auto;">🔨 Building</span>
+        </div>
+        <div>
+          <span class="tech-badge">React Native</span>
+          <span class="tech-badge">Expo SDK 54</span>
+          <span class="tech-badge">TypeScript</span>
+          <span class="tech-badge">Zustand</span>
+          <span class="tech-badge">React Navigation</span>
+          <span class="tech-badge">Axios</span>
+        </div>
+        <div style="margin-top: 16px; font-size: 12px; color: #7f8c8d; line-height: 1.8;">
+          One app — two experiences based on login role.<br>
+          Customer: Book, Track, Pay, Certificate<br>
+          Field Team: Jobs, Checklist, Compliance
+        </div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-card-header">
+          <div class="arch-card-icon" style="background: #e8f0ff; font-size: 28px;">⚙️</div>
+          <div>
+            <div class="arch-card-title">Node.js Backend</div>
+            <div class="arch-card-sub">REST API — All 3 apps</div>
+          </div>
+          <span class="status-done" style="margin-left: auto;">✅ Complete</span>
+        </div>
+        <div>
+          <span class="tech-badge">Node.js 20+</span>
+          <span class="tech-badge">Express</span>
+          <span class="tech-badge">JWT Auth</span>
+          <span class="tech-badge">Swagger</span>
+          <span class="tech-badge">Razorpay</span>
+          <span class="tech-badge">PDFKit</span>
+        </div>
+        <div style="margin-top: 16px; font-size: 12px; color: #7f8c8d; line-height: 1.8;">
+          7 modules: Auth, Bookings, Jobs, Compliance,<br>
+          EcoScore, Certificates, AMC<br>
+          + Upload, Payments, Notifications, Cron
+        </div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-card-header">
+          <div class="arch-card-icon" style="background: #fff3e0; font-size: 28px;">🖥️</div>
+          <div>
+            <div class="arch-card-title">Admin Portal</div>
+            <div class="arch-card-sub">React + Vite Web</div>
+          </div>
+          <span class="status-pending" style="margin-left: auto;">⏳ Next</span>
+        </div>
+        <div>
+          <span class="tech-badge">React 18</span>
+          <span class="tech-badge">Vite</span>
+          <span class="tech-badge">TailwindCSS</span>
+          <span class="tech-badge">React Query</span>
+          <span class="tech-badge">Recharts</span>
+        </div>
+        <div style="margin-top: 16px; font-size: 12px; color: #7f8c8d; line-height: 1.8;">
+          Dashboard, Job Allocation, Compliance Audit,<br>
+          AMC Management, MIS Reports,<br>
+          EcoScore Trends, SLA Breach Alerts
+        </div>
+      </div>
+    </div>
+
+    <div class="arch-grid">
+      <div class="arch-card">
+        <div class="arch-card-title" style="margin-bottom: 12px;">🗄️ Database — PostgreSQL (Supabase)</div>
+        <div style="font-size: 12px; color: #7f8c8d; line-height: 2;">
+          <span class="tech-badge green">users</span>
+          <span class="tech-badge green">otp_codes</span>
+          <span class="tech-badge green">bookings</span>
+          <span class="tech-badge green">jobs</span>
+          <span class="tech-badge green">compliance_logs</span>
+          <span class="tech-badge green">eco_metrics_log</span>
+          <span class="tech-badge green">hygiene_certificates</span>
+          <span class="tech-badge green">amc_contracts</span>
+          <span class="tech-badge green">notifications_log</span>
+          <span class="tech-badge green">incident_reports</span>
+        </div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-card-title" style="margin-bottom: 12px;">🔧 3rd Party Services</div>
+        <div style="font-size: 12px; line-height: 2;">
+          <span class="tech-badge orange">Cloudflare R2</span>
+          <span class="tech-badge orange">Firebase FCM</span>
+          <span class="tech-badge orange">WhatsApp (Wati)</span>
+          <span class="tech-badge orange">SMS DLT</span>
+          <span class="tech-badge orange">Razorpay</span>
+          <span class="tech-badge orange">Google Maps</span>
+          <span class="tech-badge orange">Sentry</span>
+          <span class="tech-badge orange">Render.com</span>
+        </div>
+      </div>
+
+      <div class="arch-card">
+        <div class="arch-card-title" style="margin-bottom: 12px;">📊 Build Progress</div>
+        <div style="font-size: 12px; line-height: 2.2;">
+          <div style="display: flex; justify-content: space-between;"><span>Backend API</span><span class="status-done">✅ Complete</span></div>
+          <div style="display: flex; justify-content: space-between;"><span>Database Schema</span><span class="status-done">✅ Complete</span></div>
+          <div style="display: flex; justify-content: space-between;"><span>React Native App</span><span class="status-pending">🔨 In Progress</span></div>
+          <div style="display: flex; justify-content: space-between;"><span>Admin Portal</span><span class="status-pending">⏳ Next</span></div>
+          <div style="display: flex; justify-content: space-between;"><span>Deployment</span><span class="status-pending">⏳ Week 5</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCREENS -->
+  <div class="section" id="section-screens">
+    <div style="margin-bottom: 24px;">
+      <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 4px;">Customer App Screens</h2>
+      <p style="font-size: 13px; color: #7f8c8d;">Complete booking flow from login to certificate download</p>
+    </div>
+
+    <div class="screens-grid" style="margin-bottom: 40px;">
+
+      <!-- Login Screen -->
+      <div class="screen-container">
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="status-bar"><span class="status-time">9:41</span><span class="status-icons">●●●</span></div>
+            <div style="background: #1a1a2e; flex: 1; display: flex; flex-direction: column; justify-content: space-between; padding: 20px 16px;">
+              <div class="s-logo">
+                <div class="s-logo-icon">🚿</div>
+                <div class="s-logo-text" style="color: white;">OZONE WASH</div>
+                <div class="s-logo-sub">Hygiene You Can See</div>
+              </div>
+              <div style="background: white; border-radius: 16px; padding: 16px;">
+                <div class="s-title">Enter Mobile Number</div>
+                <div class="s-sub" style="margin-bottom: 12px;">We'll send you a verification code</div>
+                <div style="display: flex; align-items: center; border: 1.5px solid #e0e0e0; border-radius: 8px; padding: 8px; margin-bottom: 10px;">
+                  <span style="font-size: 11px; margin-right: 8px;">🇮🇳 +91</span>
+                  <span style="font-size: 12px; color: #1a1a2e; font-weight: 600;">9876543210</span>
+                </div>
+                <div class="s-btn">Send OTP</div>
+              </div>
+              <div style="text-align: center; font-size: 9px; color: #7f8c8d;">By continuing you agree to our Terms</div>
+            </div>
+          </div>
+        </div>
+        <div class="screen-label">Login Screen</div>
+        <div class="screen-sub">Same for Customer & Field Team</div>
+      </div>
+
+      <!-- OTP Screen -->
+      <div class="screen-container">
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="status-bar"><span class="status-time">9:41</span><span class="status-icons">●●●</span></div>
+            <div style="background: #1a1a2e; flex: 1; display: flex; flex-direction: column; padding: 16px;">
+              <div style="color: #7f8c8d; font-size: 11px; margin-bottom: 16px;">← Back</div>
+              <div class="s-logo">
+                <div style="font-size: 24px;">🚿</div>
+                <div style="color: white; font-size: 12px; font-weight: 700; letter-spacing: 2px; margin-top: 4px;">OZONE WASH</div>
+              </div>
+              <div style="background: white; border-radius: 16px; padding: 16px; margin-top: 16px;">
+                <div class="s-title">Verify OTP</div>
+                <div class="s-sub" style="margin-bottom: 14px;">Code sent to +91 9876543210</div>
+                <div style="display: flex; justify-content: center; gap: 4px; margin-bottom: 12px;">
+                  <div class="s-otp-box">3</div>
+                  <div class="s-otp-box">0</div>
+                  <div class="s-otp-box">1</div>
+                  <div class="s-otp-box" style="border-color: #e0e0e0;"></div>
+                  <div class="s-otp-box" style="border-color: #e0e0e0;"></div>
+                  <div class="s-otp-box" style="border-color: #e0e0e0;"></div>
+                </div>
+                <div style="text-align: center; font-size: 10px; color: #7f8c8d; margin-bottom: 12px;">Resend in 57s</div>
+                <div class="s-btn" style="opacity: 0.5;">Verify & Login</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="screen-label">OTP Verification</div>
+        <div class="screen-sub">6-box auto-submit</div>
+      </div>
+
+      <!-- Booking Home -->
+      <div class="screen-container">
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="status-bar"><span class="status-time">9:41</span><span class="status-icons">●●●</span></div>
+            <div class="s-header" style="background: #1a1a2e; color: white; padding: 12px 12px 16px;">
+              <div style="font-size: 10px; color: #7f8c8d;">Good morning,</div>
+              <div style="font-size: 14px; font-weight: 700; color: white;">Imran 👋</div>
+            </div>
+            <div class="s-body">
+              <div class="s-btn" style="margin-top: 0;">🚿 Book Tank Cleaning</div>
+              <div class="s-card">
+                <div class="s-card-title">Active AMC Contract</div>
+                <div class="s-card-sub">Quarterly Plan — Expires Jun 2026</div>
+                <div style="margin-top: 4px;"><span class="s-badge badge-green">Active</span></div>
+              </div>
+              <div class="s-card">
+                <div class="s-card-title">Last Cleaning</div>
+                <div class="s-card-sub">24 Mar 2026 • Overhead Tank</div>
+                <div style="margin-top: 4px;"><div class="s-eco-circle" style="width: 36px; height: 36px; background: #f39c12; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 50;"><span style="font-size: 11px; font-weight: 700; color: white;">75</span></div><span style="font-size: 10px; margin-left: 6px; color: #f39c12; font-weight: 700;">GOLD</span></div>
+              </div>
+              <div class="s-card-title" style="margin-top: 8px; font-size: 11px;">Recent Bookings</div>
+              <div class="s-card">
+                <div class="row"><div class="s-card-title">Overhead 500L</div><span class="s-badge badge-green">Completed</span></div>
+                <div class="s-card-sub">25 Mar 2026, 10:00 AM</div>
+              </div>
+            </div>
+            <div class="s-tab-bar">
+              <div class="s-tab"><div class="s-tab-icon">🚿</div><div class="s-tab-label active">Book</div></div>
+              <div class="s-tab"><div class="s-tab-icon">📋</div><div class="s-tab-label">Bookings</div></div>
+              <div class="s-tab"><div class="s-tab-icon">🏆</div><div class="s-tab-label">Certs</div></div>
+              <div class="s-tab"><div class="s-tab-icon">👤</div><div class="s-tab-label">Profile</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="screen-label">Customer Home</div>
+        <div class="screen-sub">Book, AMC, Last clean</div>
+      </div>
+
+      <!-- Booking Form -->
+      <div class="screen-container">
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="status-bar"><span class="status-time">9:41</span><span class="status-icons">●●●</span></div>
+            <div class="s-header" style="border-bottom: 1px solid #f0f0f0;">
+              <div class="s-title">New Booking</div>
+              <div class="s-sub">Step 1 of 4 — Tank Details</div>
+              <div class="s-progress" style="margin-top: 6px;"><div class="s-progress-fill" style="width: 25%;"></div></div>
+            </div>
+            <div class="s-body">
+              <div style="font-size: 10px; font-weight: 700; color: #1a1a2e; margin-bottom: 6px;">Tank Type</div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px;">
+                <div style="border: 2px solid #2ecc71; border-radius: 8px; padding: 8px; text-align: center; background: #e8f8f0;">
+                  <div style="font-size: 16px;">🏠</div>
+                  <div style="font-size: 9px; font-weight: 700; color: #1a8a4a;">Overhead</div>
+                </div>
+                <div style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 8px; text-align: center;">
+                  <div style="font-size: 16px;">🏗️</div>
+                  <div style="font-size: 9px; color: #7f8c8d;">Underground</div>
+                </div>
+              </div>
+              <div style="font-size: 10px; font-weight: 700; margin-bottom: 4px;">Tank Size (Litres)</div>
+              <div class="s-input">500</div>
+              <div style="font-size: 10px; font-weight: 700; margin: 8px 0 4px;">Service Address</div>
+              <div class="s-input">123 Banjara Hills, Hyderabad</div>
+              <div class="map-placeholder">🗺️</div>
+            </div>
+            <div style="padding: 8px 12px;"><div class="s-btn">Next →</div></div>
+          </div>
+        </div>
+        <div class="screen-label">Booking Form</div>
+        <div class="screen-sub">Tank type, size, location</div>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 24px;">
+      <h2 style="font-size: 20px; font-weight: 700; margin-bottom: 4px;">Field Team App Screens</h2>
+      <p style="font-size: 13px; color: #7f8c8d;">Job management and 8-step compliance checklist</p>
+    </div>
+
+    <div class="screens-grid">
+
+      <!-- Field Jobs -->
+      <div class="screen-container">
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="status-bar"><span class="status-time">9:41</span><span class="status-icons">●●●</span></div>
+            <div class="s-header" style="background: #1a1a2e; color: white; padding: 12px;">
+              <div style="font-size: 14px; font-weight: 700; color: white;">Today's Jobs</div>
+              <div style="font-size: 10px; color: #7f8c8d;">24 Mar 2026 — 2 assigned</div>
+            </div>
+            <div class="s-body">
+              <div class="map-placeholder">🗺️ Route Map</div>
+              <div class="s-card" style="border-left: 3px solid #2ecc71;">
+                <div class="row"><div class="s-card-title">Job #001</div><span class="s-badge badge-green">Scheduled</span></div>
+                <div class="s-card-sub">123 Banjara Hills • 10:00 AM</div>
+                <div class="s-card-sub">Overhead 500L • Imran Pasha</div>
+                <div class="s-btn-outline" style="margin-top: 6px;">Start Job</div>
+              </div>
+              <div class="s-card" style="border-left: 3px solid #f39c12;">
+                <div class="row"><div class="s-card-title">Job #002</div><span class="s-badge badge-orange">Upcoming</span></div>
+                <div class="s-card-sub">456 Jubilee Hills • 2:00 PM</div>
+                <div class="s-card-sub">Sump 1000L • Rahul Kumar</div>
+              </div>
+            </div>
+            <div class="s-tab-bar">
+              <div class="s-tab"><div class="s-tab-icon">🔧</div><div class="s-tab-label active">Jobs</div></div>
+              <div class="s-tab"><div class="s-tab-icon">👤</div><div class="s-tab-label">Profile</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="screen-label">Field Team Jobs</div>
+        <div class="screen-sub">Today's assigned jobs + map</div>
+      </div>
+
+      <!-- Checklist -->
+      <div class="screen-container">
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="status-bar"><span class="status-time">9:41</span><span class="status-icons">●●●</span></div>
+            <div class="s-header" style="border-bottom: 1px solid #f0f0f0;">
+              <div class="s-title">Compliance Checklist</div>
+              <div class="s-sub">Job #001 • 5/8 complete</div>
+              <div class="s-progress" style="margin-top: 6px;"><div class="s-progress-fill" style="width: 62%;"></div></div>
+            </div>
+            <div class="s-body">
+              <div class="s-step"><div class="s-step-num step-done">1</div><div class="s-step-text">Site Inspection</div><span class="s-badge badge-green" style="margin-left: auto;">✓</span></div>
+              <div class="s-step"><div class="s-step-num step-done">2</div><div class="s-step-text">PPE Check</div><span class="s-badge badge-green" style="margin-left: auto;">✓</span></div>
+              <div class="s-step"><div class="s-step-num step-done">3</div><div class="s-step-text">Tank Drainage</div><span class="s-badge badge-green" style="margin-left: auto;">✓</span></div>
+              <div class="s-step"><div class="s-step-num step-done">4</div><div class="s-step-text">Pre-Clean Photos</div><span class="s-badge badge-green" style="margin-left: auto;">✓</span></div>
+              <div class="s-step"><div class="s-step-num step-done">5</div><div class="s-step-text">Ozone Treatment</div><span class="s-badge badge-green" style="margin-left: auto;">✓</span></div>
+              <div class="s-step" style="background: #f8f9fa; border-radius: 6px; padding: 6px;"><div class="s-step-num" style="background: #2ecc71; color: white;">6</div><div class="s-step-text">Microbial Test</div><span style="font-size: 10px; color: #2ecc71; margin-left: auto;">→ Active</span></div>
+              <div class="s-step"><div class="s-step-num step-pending">7</div><div class="s-step-text" style="color: #7f8c8d;">Post-Clean Photos</div></div>
+              <div class="s-step"><div class="s-step-num step-pending">8</div><div class="s-step-text" style="color: #7f8c8d;">Customer Sign-off</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="screen-label">Compliance Checklist</div>
+        <div class="screen-sub">8-step with progress</div>
+      </div>
+
+      <!-- Photo Capture -->
+      <div class="screen-container">
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="status-bar"><span class="status-time">9:41</span><span class="status-icons">●●●</span></div>
+            <div class="s-header" style="border-bottom: 1px solid #f0f0f0;">
+              <div class="s-title">Step 6 — Microbial Test</div>
+              <div class="s-sub">Upload test result photo</div>
+            </div>
+            <div class="s-body">
+              <div style="background: #f0f0f0; border-radius: 12px; height: 110px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; flex-direction: column; gap: 4px;">
+                <div style="font-size: 28px;">📷</div>
+                <div style="font-size: 10px; color: #7f8c8d;">Before Photo</div>
+              </div>
+              <div style="background: #e8f8f0; border-radius: 12px; height: 80px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; flex-direction: column; gap: 4px; border: 1.5px solid #2ecc71;">
+                <div style="font-size: 20px;">✅</div>
+                <div style="font-size: 10px; color: #1a8a4a; font-weight: 600;">After Photo Uploaded</div>
+              </div>
+              <div style="font-size: 10px; font-weight: 700; margin-bottom: 4px;">GPS Location</div>
+              <div style="display: flex; align-items: center; gap: 6px; background: #f8f9fa; border-radius: 8px; padding: 8px; font-size: 10px; color: #7f8c8d;">
+                <span>📍</span> 17.4126, 78.4071 — Captured
+              </div>
+              <div style="margin-top: 8px; font-size: 10px; font-weight: 700; margin-bottom: 4px;">Ozone Exposure</div>
+              <div class="s-input">45 minutes</div>
+            </div>
+            <div style="padding: 8px 12px;"><div class="s-btn">Mark Step Complete ✓</div></div>
+          </div>
+        </div>
+        <div class="screen-label">Compliance Step</div>
+        <div class="screen-sub">Photos, GPS, measurements</div>
+      </div>
+
+      <!-- Certificate -->
+      <div class="screen-container">
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="status-bar"><span class="status-time">9:41</span><span class="status-icons">●●●</span></div>
+            <div class="cert-header">
+              <div class="cert-title">🚿 OZONE WASH</div>
+              <div style="color: #7f8c8d; font-size: 8px; margin-top: 2px;">DIGITAL HYGIENE CERTIFICATE</div>
+            </div>
+            <div class="cert-body">
+              <div class="s-eco-circle" style="margin-bottom: 8px;">
+                <div class="s-eco-score">75</div>
+                <div class="s-eco-label">GOLD</div>
+              </div>
+              <div class="s-card">
+                <div class="price-row"><span style="color: #7f8c8d;">Customer</span><span style="font-weight: 600;">Imran Pasha</span></div>
+                <div class="price-row"><span style="color: #7f8c8d;">Tank Type</span><span>Overhead 500L</span></div>
+                <div class="price-row"><span style="color: #7f8c8d;">Date</span><span>24 Mar 2026</span></div>
+                <div class="price-row"><span style="color: #7f8c8d;">Valid Until</span><span>24 Sep 2026</span></div>
+              </div>
+              <div class="qr-placeholder">▦</div>
+              <div style="text-align: center; font-size: 9px; color: #7f8c8d;">Scan to verify authenticity</div>
+              <div class="s-btn-outline" style="margin-top: 8px;">⬇ Download PDF</div>
+            </div>
+          </div>
+        </div>
+        <div class="screen-label">Hygiene Certificate</div>
+        <div class="screen-sub">EcoScore + QR verify</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- NAVIGATION FLOW -->
+  <div class="section" id="section-navigation">
+    <div class="flow-container">
+      <div class="flow-title">Auth Flow — Role-based Navigation</div>
+      <div class="flow-steps">
+        <div class="flow-step">
+          <div class="flow-step-circle" style="background: #e8f0ff; color: #1a4a8a;">📱</div>
+          <div class="flow-step-label">App Opens</div>
+          <div class="flow-step-sub">Check AsyncStorage</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step">
+          <div class="flow-step-circle" style="background: #e8f8f0; color: #1a8a4a;">📞</div>
+          <div class="flow-step-label">Phone Input</div>
+          <div class="flow-step-sub">Enter 10-digit number</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step">
+          <div class="flow-step-circle" style="background: #fff3e0; color: #e65100;">🔢</div>
+          <div class="flow-step-label">OTP Screen</div>
+          <div class="flow-step-sub">6-box auto-submit</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step">
+          <div class="flow-step-circle" style="background: #f0e8ff; color: #6a1ab1;">🔐</div>
+          <div class="flow-step-label">JWT Issued</div>
+          <div class="flow-step-sub">Role embedded</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step">
+          <div class="flow-step-circle" style="background: #e8f8f0; color: #1a8a4a;">🏠</div>
+          <div class="flow-step-label">Customer Home</div>
+          <div class="flow-step-sub">role = customer</div>
+        </div>
+        <div class="flow-arrow" style="opacity: 0.3;">|</div>
+        <div class="flow-step">
+          <div class="flow-step-circle" style="background: #fff3e0; color: #e65100;">🔧</div>
+          <div class="flow-step-label">Field Team Home</div>
+          <div class="flow-step-sub">role = field_team</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flow-container">
+      <div class="flow-title">Customer Booking Flow</div>
+      <div class="flow-steps">
+        <div class="flow-step"><div class="flow-step-circle" style="background: #e8f8f0; color: #1a8a4a;">1</div><div class="flow-step-label">Tank Details</div><div class="flow-step-sub">Type, size, address</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-step-circle" style="background: #e8f8f0; color: #1a8a4a;">2</div><div class="flow-step-label">Date & Slot</div><div class="flow-step-sub">Calendar, time slot</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-step-circle" style="background: #e8f8f0; color: #1a8a4a;">3</div><div class="flow-step-label">Add-ons & AMC</div><div class="flow-step-sub">Optional extras</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-step-circle" style="background: #e8f8f0; color: #1a8a4a;">4</div><div class="flow-step-label">Price Review</div><div class="flow-step-sub">Base + GST</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-step-circle" style="background: #e8f8f0; color: #1a8a4a;">5</div><div class="flow-step-label">Payment</div><div class="flow-step-sub">Razorpay UPI/Card</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-step-circle" style="background: #e8f8f0; color: #1a8a4a;">6</div><div class="flow-step-label">Confirmed</div><div class="flow-step-sub">WhatsApp + SMS</div></div>
+      </div>
+    </div>
+
+    <div class="flow-container">
+      <div class="flow-title">Field Team Compliance Flow</div>
+      <div class="flow-steps">
+        <div class="flow-step"><div class="flow-step-circle" style="background: #fff3e0; color: #e65100;">1</div><div class="flow-step-label">View Job</div><div class="flow-step-sub">Customer details</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-step-circle" style="background: #fff3e0; color: #e65100;">2</div><div class="flow-step-label">Start Job</div><div class="flow-step-sub">GPS captured</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-step-circle" style="background: #fff3e0; color: #e65100;">3</div><div class="flow-step-label">8 Steps</div><div class="flow-step-sub">Photos + GPS each</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-step-circle" style="background: #fff3e0; color: #e65100;">4</div><div class="flow-step-label">Complete</div><div class="flow-step-sub">All 8 verified</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-step-circle" style="background: #fff3e0; color: #e65100;">5</div><div class="flow-step-label">EcoScore</div><div class="flow-step-sub">Auto-calculated</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-step-circle" style="background: #fff3e0; color: #e65100;">6</div><div class="flow-step-label">Certificate</div><div class="flow-step-sub">PDF + QR generated</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- API ENDPOINTS -->
+  <div class="section" id="section-api">
+    <div class="api-grid">
+      <div class="api-card">
+        <div class="api-title">🔐 Auth</div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/auth/send-otp</span><span class="endpoint-desc">Send OTP</span></div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/auth/verify-otp</span><span class="endpoint-desc">Login + JWT</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/auth/profile</span><span class="endpoint-desc">Get profile</span></div>
+      </div>
+
+      <div class="api-card">
+        <div class="api-title">📋 Bookings</div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/bookings/slots</span><span class="endpoint-desc">Available slots</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/bookings/price</span><span class="endpoint-desc">Price calc</span></div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/bookings</span><span class="endpoint-desc">Create booking</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/bookings/my</span><span class="endpoint-desc">My bookings</span></div>
+        <div class="endpoint"><span class="method patch">PATCH</span><span class="endpoint-path">/bookings/:id/cancel</span><span class="endpoint-desc">Cancel</span></div>
+      </div>
+
+      <div class="api-card">
+        <div class="api-title">🔧 Jobs</div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/jobs/my</span><span class="endpoint-desc">Field team jobs</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/jobs/stats</span><span class="endpoint-desc">Today stats</span></div>
+        <div class="endpoint"><span class="method patch">PATCH</span><span class="endpoint-path">/jobs/:id/assign</span><span class="endpoint-desc">Assign team</span></div>
+        <div class="endpoint"><span class="method patch">PATCH</span><span class="endpoint-path">/jobs/:id/start</span><span class="endpoint-desc">Start job</span></div>
+        <div class="endpoint"><span class="method patch">PATCH</span><span class="endpoint-path">/jobs/:id/complete</span><span class="endpoint-desc">Complete job</span></div>
+      </div>
+
+      <div class="api-card">
+        <div class="api-title">✅ Compliance</div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/compliance/:id/checklist</span><span class="endpoint-desc">Get checklist</span></div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/compliance/step</span><span class="endpoint-desc">Log step</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/compliance/:id/status</span><span class="endpoint-desc">Completion %</span></div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/compliance/:id/complete</span><span class="endpoint-desc">Gate check</span></div>
+      </div>
+
+      <div class="api-card">
+        <div class="api-title">🌿 EcoScore</div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/ecoscore/calculate</span><span class="endpoint-desc">Calculate</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/ecoscore/:jobId</span><span class="endpoint-desc">Get score</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/ecoscore/leaderboard</span><span class="endpoint-desc">Team ranks</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/ecoscore/trends</span><span class="endpoint-desc">Monthly trends</span></div>
+      </div>
+
+      <div class="api-card">
+        <div class="api-title">🏆 Certificates</div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/certificates/generate</span><span class="endpoint-desc">Generate PDF</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/certificates/job/:id</span><span class="endpoint-desc">Get cert</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/certificates/verify/:id</span><span class="endpoint-desc">Public verify</span></div>
+        <div class="endpoint"><span class="method patch">PATCH</span><span class="endpoint-path">/certificates/:id/revoke</span><span class="endpoint-desc">Revoke</span></div>
+      </div>
+
+      <div class="api-card">
+        <div class="api-title">📄 AMC Contracts</div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/amc/plans</span><span class="endpoint-desc">Plan options</span></div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/amc/contracts</span><span class="endpoint-desc">Create contract</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/amc/contracts/my</span><span class="endpoint-desc">My contracts</span></div>
+        <div class="endpoint"><span class="method patch">PATCH</span><span class="endpoint-path">/amc/contracts/:id/renew</span><span class="endpoint-desc">Renew</span></div>
+        <div class="endpoint"><span class="method get">GET</span><span class="endpoint-path">/amc/sla-breaches</span><span class="endpoint-desc">SLA breaches</span></div>
+      </div>
+
+      <div class="api-card">
+        <div class="api-title">💳 Payments + Upload</div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/payments/create-order</span><span class="endpoint-desc">Razorpay order</span></div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/payments/verify</span><span class="endpoint-desc">Verify payment</span></div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/payments/refund</span><span class="endpoint-desc">Refund</span></div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/upload/photo</span><span class="endpoint-desc">Upload to R2</span></div>
+        <div class="endpoint"><span class="method post">POST</span><span class="endpoint-path">/upload/photos</span><span class="endpoint-desc">Multi upload</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DATABASE -->
+  <div class="section" id="section-database">
+    <div class="db-grid">
+      <div class="db-table">
+        <div class="db-table-name">users</div>
+        <div class="db-field"><span class="db-pk">PK</span><span class="db-field-name">id</span><span class="db-field-type">UUID</span></div>
+        <div class="db-field"><span class="db-field-name">phone</span><span class="db-field-type">VARCHAR UNIQUE</span></div>
+        <div class="db-field"><span class="db-field-name">role</span><span class="db-field-type">customer|field_team|admin</span></div>
+        <div class="db-field"><span class="db-field-name">name</span><span class="db-field-type">VARCHAR</span></div>
+        <div class="db-field"><span class="db-field-name">fcm_token</span><span class="db-field-type">TEXT</span></div>
+        <div class="db-field"><span class="db-field-name">lang</span><span class="db-field-type">en|te</span></div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">bookings</div>
+        <div class="db-field"><span class="db-pk">PK</span><span class="db-field-name">id</span><span class="db-field-type">UUID</span></div>
+        <div class="db-field"><span class="db-fk">FK</span><span class="db-field-name">customer_id</span><span class="db-field-type">→ users</span></div>
+        <div class="db-field"><span class="db-field-name">tank_type</span><span class="db-field-type">VARCHAR</span></div>
+        <div class="db-field"><span class="db-field-name">slot_time</span><span class="db-field-type">TIMESTAMP</span></div>
+        <div class="db-field"><span class="db-field-name">amount_paise</span><span class="db-field-type">INTEGER</span></div>
+        <div class="db-field"><span class="db-field-name">job_type</span><span class="db-field-type">VARCHAR</span></div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">jobs</div>
+        <div class="db-field"><span class="db-pk">PK</span><span class="db-field-name">id</span><span class="db-field-type">UUID</span></div>
+        <div class="db-field"><span class="db-fk">FK</span><span class="db-field-name">booking_id</span><span class="db-field-type">→ bookings</span></div>
+        <div class="db-field"><span class="db-fk">FK</span><span class="db-field-name">assigned_team_id</span><span class="db-field-type">→ users</span></div>
+        <div class="db-field"><span class="db-field-name">status</span><span class="db-field-type">scheduled|in_progress...</span></div>
+        <div class="db-field"><span class="db-field-name">scheduled_at</span><span class="db-field-type">TIMESTAMP</span></div>
+        <div class="db-field"><span class="db-field-name">resource_type</span><span class="db-field-type">VARCHAR</span></div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">compliance_logs</div>
+        <div class="db-field"><span class="db-pk">PK</span><span class="db-field-name">id</span><span class="db-field-type">UUID</span></div>
+        <div class="db-field"><span class="db-fk">FK</span><span class="db-field-name">job_id</span><span class="db-field-type">→ jobs</span></div>
+        <div class="db-field"><span class="db-field-name">step_number</span><span class="db-field-type">INT 1-8</span></div>
+        <div class="db-field"><span class="db-field-name">photo_before_url</span><span class="db-field-type">TEXT (R2)</span></div>
+        <div class="db-field"><span class="db-field-name">gps_lat/lng</span><span class="db-field-type">DECIMAL</span></div>
+        <div class="db-field"><span class="db-field-name">completed</span><span class="db-field-type">BOOLEAN</span></div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">hygiene_certificates</div>
+        <div class="db-field"><span class="db-pk">PK</span><span class="db-field-name">id</span><span class="db-field-type">UUID</span></div>
+        <div class="db-field"><span class="db-fk">FK</span><span class="db-field-name">job_id</span><span class="db-field-type">→ jobs UNIQUE</span></div>
+        <div class="db-field"><span class="db-field-name">eco_score</span><span class="db-field-type">INTEGER</span></div>
+        <div class="db-field"><span class="db-field-name">certificate_url</span><span class="db-field-type">TEXT (R2)</span></div>
+        <div class="db-field"><span class="db-field-name">digital_signature</span><span class="db-field-type">SHA-256</span></div>
+        <div class="db-field"><span class="db-field-name">valid_until</span><span class="db-field-type">DATE +6 months</span></div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">amc_contracts</div>
+        <div class="db-field"><span class="db-pk">PK</span><span class="db-field-name">id</span><span class="db-field-type">UUID</span></div>
+        <div class="db-field"><span class="db-fk">FK</span><span class="db-field-name">customer_id</span><span class="db-field-type">→ users</span></div>
+        <div class="db-field"><span class="db-field-name">plan_type</span><span class="db-field-type">monthly|yearly...</span></div>
+        <div class="db-field"><span class="db-field-name">sla_terms</span><span class="db-field-type">JSONB</span></div>
+        <div class="db-field"><span class="db-field-name">customer_esign</span><span class="db-field-type">TEXT base64</span></div>
+        <div class="db-field"><span class="db-field-name">renewal_pending</span><span class="db-field-type">BOOLEAN</span></div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">eco_metrics_log</div>
+        <div class="db-field"><span class="db-pk">PK</span><span class="db-field-name">id</span><span class="db-field-type">UUID</span></div>
+        <div class="db-field"><span class="db-fk">FK</span><span class="db-field-name">job_id</span><span class="db-field-type">→ jobs UNIQUE</span></div>
+        <div class="db-field"><span class="db-field-name">eco_score</span><span class="db-field-type">INT 0-100</span></div>
+        <div class="db-field"><span class="db-field-name">badge_level</span><span class="db-field-type">bronze|gold|platinum</span></div>
+        <div class="db-field"><span class="db-field-name">score_breakdown</span><span class="db-field-type">JSONB</span></div>
+        <div class="db-field"><span class="db-field-name">ppe_list</span><span class="db-field-type">JSONB array</span></div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">notifications_log</div>
+        <div class="db-field"><span class="db-pk">PK</span><span class="db-field-name">id</span><span class="db-field-type">UUID</span></div>
+        <div class="db-field"><span class="db-fk">FK</span><span class="db-field-name">user_id</span><span class="db-field-type">→ users</span></div>
+        <div class="db-field"><span class="db-field-name">type</span><span class="db-field-type">whatsapp|sms|push|email</span></div>
+        <div class="db-field"><span class="db-field-name">template_name</span><span class="db-field-type">VARCHAR</span></div>
+        <div class="db-field"><span class="db-field-name">status</span><span class="db-field-type">sent|failed</span></div>
+        <div class="db-field"><span class="db-field-name">sent_at</span><span class="db-field-type">TIMESTAMP</span></div>
+      </div>
+
+      <div class="db-table">
+        <div class="db-table-name">incident_reports</div>
+        <div class="db-field"><span class="db-pk">PK</span><span class="db-field-name">id</span><span class="db-field-type">UUID</span></div>
+        <div class="db-field"><span class="db-fk">FK</span><span class="db-field-name">job_id</span><span class="db-field-type">→ jobs</span></div>
+        <div class="db-field"><span class="db-fk">FK</span><span class="db-field-name">reported_by</span><span class="db-field-type">→ users</span></div>
+        <div class="db-field"><span class="db-field-name">severity</span><span class="db-field-type">low|medium|high|critical</span></div>
+        <div class="db-field"><span class="db-field-name">status</span><span class="db-field-type">open|resolved|escalated</span></div>
+        <div class="db-field"><span class="db-field-name">photo_url</span><span class="db-field-type">TEXT (R2)</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function showSection(name) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('section-' + name).classList.add('active');
+  event.target.classList.add('active');
+}
+</script>
+
+</body>
+</html>

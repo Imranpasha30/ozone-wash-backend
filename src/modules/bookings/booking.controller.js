@@ -1,5 +1,7 @@
 const { validationResult } = require('express-validator');
 const BookingService = require('./booking.service');
+const NotificationService = require('../../services/notification.service');
+const AuthRepository = require('../auth/auth.repository');
 const { sendSuccess, sendError } = require('../../utils/response');
 
 const BookingController = {
@@ -43,6 +45,12 @@ const BookingController = {
         return sendError(res, 'Validation failed', 400, errors.array());
       }
       const result = await BookingService.createBooking(req.user.id, req.body);
+      AuthRepository.findById(req.user.id).then(customer => {
+        NotificationService.onBookingConfirmed(
+          { phone: req.user.phone, name: customer?.name, fcm_token: customer?.fcm_token },
+          result.job
+        );
+      }).catch(() => {});
       return sendSuccess(res, result, 'Booking created successfully', 201);
     } catch (err) {
       next(err);
@@ -84,6 +92,16 @@ const BookingController = {
         offset: parseInt(offset) || 0,
       });
       return sendSuccess(res, { bookings });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // PATCH /api/v1/bookings/:id/confirm (admin only)
+  confirmBooking: async (req, res, next) => {
+    try {
+      const booking = await BookingService.updateBookingStatus(req.params.id, 'confirmed');
+      return sendSuccess(res, { booking });
     } catch (err) {
       next(err);
     }

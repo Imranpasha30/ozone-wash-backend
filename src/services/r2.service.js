@@ -1,5 +1,4 @@
 const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const multer = require('multer');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
@@ -78,20 +77,36 @@ const R2Service = {
 
 };
 
+// Allowed MIME types — checked against the real file header, not just the extension.
+// This prevents extension-spoofing attacks (e.g. renaming a .php to .jpg).
+const ALLOWED_MIME = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/pdf',
+  'video/mp4',
+  'audio/mpeg',
+]);
+
+const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.pdf', '.mp4', '.mp3']);
+
 // Multer config — stores files in memory before uploading to R2
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB max
   },
-  fileFilter: (req, file, cb) => {
-    const allowed = ['.jpg', '.jpeg', '.png', '.pdf', '.mp4', '.mp3'];
+  fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (allowed.includes(ext)) {
-      cb(null, true);
-    } else {
-      cb(new Error('File type not allowed. Use jpg, png, pdf, mp4 or mp3.'));
+    const mime = file.mimetype.toLowerCase();
+
+    if (!ALLOWED_EXT.has(ext)) {
+      return cb(new Error('File extension not allowed. Use jpg, png, webp, pdf, mp4 or mp3.'));
     }
+    if (!ALLOWED_MIME.has(mime)) {
+      return cb(new Error('File type not allowed. MIME type mismatch detected.'));
+    }
+    cb(null, true);
   },
 });
 

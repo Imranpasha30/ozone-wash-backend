@@ -99,7 +99,13 @@ const NotificationService = {
     }
   },
 
-  // ── SMS (DLT Gateway) ─────────────────────────────────────────────────
+  // ── SMS (Fast2SMS — Primary Indian OTP Provider) ─────────────────────
+  // Provider: https://fast2sms.com — cheapest, instant OTP, no DLT needed for testing
+  // Get API key from: fast2sms.com → Dashboard → Dev API
+  // Set SMS_PROVIDER=fast2sms in .env (default)
+  //
+  // Alt provider: MSG91 — enterprise-grade, DLT compliant
+  // Set SMS_PROVIDER=msg91, SMS_API_KEY=authkey, SMS_TEMPLATE_ID=your_template_id
   sendSMS: async (phone, message) => {
     try {
       if (!process.env.SMS_API_KEY) {
@@ -107,18 +113,67 @@ const NotificationService = {
         return { success: true, dev: true };
       }
 
-      const response = await axios.post(process.env.SMS_API_URL, {
-        apikey: process.env.SMS_API_KEY,
-        sender: process.env.SMS_SENDER_ID,
-        to: phone,
-        message,
-      });
+      const provider = process.env.SMS_PROVIDER || 'fast2sms';
 
-      return { success: true, data: response.data };
+      if (provider === 'fast2sms') {
+        const response = await axios.post(
+          'https://www.fast2sms.com/dev/bulkV2',
+          {
+            route: 'dlt',
+            sender_id: process.env.SMS_SENDER_ID || 'OZNWSH',
+            message: process.env.SMS_TEMPLATE_ID || message,
+            variables_values: message,
+            flash: '0',
+            numbers: phone,
+          },
+          { headers: { authorization: process.env.SMS_API_KEY } }
+        );
+        return { success: true, data: response.data };
+
+      } else if (provider === 'msg91') {
+        const response = await axios.post(
+          'https://control.msg91.com/api/v5/flow/',
+          {
+            template_id: process.env.SMS_TEMPLATE_ID,
+            recipients: [{ mobiles: `91${phone}`, otp: message }],
+          },
+          {
+            headers: {
+              authkey: process.env.SMS_API_KEY,
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+        return { success: true, data: response.data };
+
+      } else {
+        // Generic fallback — POST to SMS_API_URL with common params
+        const response = await axios.post(process.env.SMS_API_URL, {
+          apikey: process.env.SMS_API_KEY,
+          sender: process.env.SMS_SENDER_ID,
+          to: phone,
+          message,
+        });
+        return { success: true, data: response.data };
+      }
     } catch (err) {
       console.error('SMS error:', err.message);
       return { success: false, error: err.message };
     }
+  },
+
+  // ── OTP Delivery (SMS + WhatsApp combined) ────────────────────────────
+  // Called by auth.service.js when sending login OTP
+  sendOtp: async (phone, otpCode) => {
+    const message = `${otpCode} is your Ozone Wash OTP. Valid for 10 minutes. Do not share with anyone. -OZNWSH`;
+
+    await Promise.allSettled([
+      NotificationService.sendSMS(phone, message),
+      NotificationService.sendWhatsApp(phone, 'otp_login', [
+        { name: 'otp', value: otpCode },
+        { name: 'validity', value: '10 minutes' },
+      ]),
+    ]);
   },
 
   // ── Email (Nodemailer) ────────────────────────────────────────────────
@@ -206,9 +261,10 @@ const NotificationService = {
 
   // 5. Certificate generated
   onCertificateGenerated: async (customer, cert) => {
-    const message = `Your Ozone Wash hygiene certificate is ready! Download: ${cert.certificate_url} -OZNWSH`;
+    const smsMessage = `Your Ozone Wash hygiene certificate is ready! EcoScore: ${cert.eco_score}. Download: ${cert.certificate_url} -OZNWSH`;
 
     await Promise.allSettled([
+      NotificationService.sendSMS(customer.phone, smsMessage),
       NotificationService.sendWhatsApp(customer.phone, 'certificate_ready', [
         { name: 'customer_name', value: customer.name || 'Customer' },
         { name: 'cert_url', value: cert.certificate_url },

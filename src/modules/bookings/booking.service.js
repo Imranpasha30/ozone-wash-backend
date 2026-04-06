@@ -43,18 +43,22 @@ const BookingService = {
     let total = basePrice + addonTotal;
 
     // Apply AMC discount if applicable
+    let discountAmount = 0;
     if (amc_plan && AMC_DISCOUNTS[amc_plan]) {
-      total = total * (1 - AMC_DISCOUNTS[amc_plan]);
+      discountAmount = Math.round(total * AMC_DISCOUNTS[amc_plan]);
+      total = total - discountAmount;
     }
 
     // Add 18% GST
     const gst = total * 0.18;
     const grandTotal = Math.round(total + gst);
 
-    // Return in paise (1 INR = 100 paise) for Razorpay
+    // Note: base_price, addon_total, gst, grand_total are all in RUPEES.
+    // Only amount_paise is in paise (for Razorpay).
     return {
       base_price: basePrice,
       addon_total: addonTotal,
+      discount_amount: discountAmount,
       subtotal: Math.round(total),
       gst: Math.round(gst),
       grand_total: grandTotal,
@@ -158,6 +162,14 @@ const BookingService = {
   // Get all bookings (admin only)
   getAllBookings: async (filters) => {
     return await BookingRepository.findAll(filters);
+  },
+
+  // Update booking status directly (admin only)
+  updateBookingStatus: async (bookingId, status) => {
+    const booking = await BookingRepository.findById(bookingId);
+    if (!booking) throw { status: 404, message: 'Booking not found.' };
+    const updated = await BookingRepository.updateStatus(bookingId, status);
+    return updated;
   },
 
   // Cancel a booking

@@ -23,9 +23,11 @@ const BookingRepository = {
 
   findById: async (id) => {
     const result = await db.query(
-      `SELECT b.*, u.name as customer_name, u.phone as customer_phone
+      `SELECT b.*, u.name as customer_name, u.phone as customer_phone,
+              j.id as job_id
        FROM bookings b
        JOIN users u ON u.id = b.customer_id
+       LEFT JOIN jobs j ON j.booking_id = b.id
        WHERE b.id = $1`,
       [id]
     );

@@ -1,6 +1,7 @@
 // ONLY job: business logic. Calls repository for data.
 const jwt = require('jsonwebtoken');
 const AuthRepository = require('./auth.repository');
+const NotificationService = require('../../services/notification.service');
 
 const AuthService = {
 
@@ -8,16 +9,22 @@ const AuthService = {
     // Generate 6-digit OTP
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Expires in 5 minutes
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    // Expires in 10 minutes
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    // Save to DB
+    // Save to DB (replaces any existing unused OTP for this phone)
     await AuthRepository.saveOtp(phone, otpCode, expiresAt);
 
-    // In development just log it — no SMS needed for testing
-    if (process.env.NODE_ENV === 'development') {
+    // Always log OTP in development for easy testing without SMS credits
+    if (process.env.NODE_ENV !== 'production') {
       console.log(`📱 OTP for ${phone}: ${otpCode}`);
     }
+
+    // Send via SMS and WhatsApp — both are fire-and-forget.
+    // If API keys are not set, NotificationService falls back to console.log silently.
+    await Promise.allSettled([
+      NotificationService.sendOtp(phone, otpCode),
+    ]);
 
     return { message: 'OTP sent successfully' };
   },

@@ -21,8 +21,8 @@ const JobRepository = {
   findById: async (id) => {
     const result = await db.query(
       `SELECT j.*,
-        c.name as customer_name, c.phone as customer_phone,
-        t.name as team_name, t.phone as team_phone,
+        c.name as customer_name, c.phone as customer_phone, c.fcm_token as customer_fcm_token,
+        t.name as team_name, t.phone as team_phone, t.fcm_token as team_fcm_token,
         b.address, b.tank_type, b.tank_size_litres, b.addons, b.amount_paise
        FROM jobs j
        JOIN users c ON c.id = j.customer_id
@@ -43,7 +43,7 @@ const JobRepository = {
        JOIN users c ON c.id = j.customer_id
        LEFT JOIN bookings b ON b.id = j.booking_id
        WHERE j.assigned_team_id = $1
-         AND DATE(j.scheduled_at) = CURRENT_DATE
+         AND j.status NOT IN ('cancelled')
        ORDER BY j.scheduled_at ASC`,
       [teamId]
     );
@@ -115,7 +115,22 @@ const JobRepository = {
     return result.rows;
   },
 
-  getTodayStats: async () => {
+  getTodayStats: async (teamId = null) => {
+    if (teamId) {
+      // Field team stats — scoped to their assigned jobs
+      const result = await db.query(
+        `SELECT
+          COUNT(*) as total_assigned,
+          COUNT(*) FILTER (WHERE status = 'scheduled') as pending,
+          COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress,
+          COUNT(*) FILTER (WHERE status = 'completed' AND DATE(completed_at) = CURRENT_DATE) as completed_today
+         FROM jobs
+         WHERE assigned_team_id = $1 AND status NOT IN ('cancelled')`,
+        [teamId]
+      );
+      return result.rows[0];
+    }
+    // Admin stats — global, today-focused
     const result = await db.query(
       `SELECT
         COUNT(*) FILTER (WHERE DATE(scheduled_at) = CURRENT_DATE) as today_total,

@@ -13,7 +13,7 @@ const AuthRepository = {
 
   findById: async (id) => {
     const result = await db.query(
-      'SELECT id, phone, email, role, name, lang FROM users WHERE id = $1 LIMIT 1',
+      'SELECT id, phone, email, role, name, lang, fcm_token FROM users WHERE id = $1 LIMIT 1',
       [id]
     );
     return result.rows[0] || null;
