@@ -168,18 +168,23 @@ const JobController = {
   generateEndOtp: async (req, res, next) => {
     try {
       const result = await JobService.generateEndOtp(req.params.id, req.user.id);
-      // Send OTP to customer via push notification
+      // Send both OTPs to customer via push notification
       JobRepository.findById(req.params.id).then(fullJob => {
         if (fullJob && fullJob.customer_fcm_token) {
           NotificationService.sendPush(
             fullJob.customer_fcm_token,
-            '🔑 End OTP',
-            `Your end OTP is: ${fullJob.end_otp}. Share this with the technician to complete service.`,
-            { job_id: fullJob.id, type: 'end_otp', otp: fullJob.end_otp }
+            '🔑 Service Feedback OTP',
+            `Your technician has completed the work. Open the app to share your feedback OTP.`,
+            {
+              job_id: fullJob.id,
+              type: 'end_otp',
+              otp_satisfied: fullJob.end_otp_satisfied,
+              otp_unsatisfied: fullJob.end_otp_unsatisfied,
+            }
           );
         }
       }).catch(() => {});
-      return sendSuccess(res, result, 'End OTP sent to customer');
+      return sendSuccess(res, result, 'End OTPs sent to customer');
     } catch (err) {
       next(err);
     }
@@ -190,8 +195,43 @@ const JobController = {
     try {
       const { otp } = req.body;
       if (!otp) return sendError(res, 'OTP is required', 400);
-      const job = await JobService.verifyEndOtp(req.params.id, req.user.id, otp);
-      return sendSuccess(res, { job }, 'End OTP verified. Job closeout confirmed.');
+      const result = await JobService.verifyEndOtp(req.params.id, req.user.id, otp);
+
+      // If customer is NOT satisfied, notify admin
+      if (result.customer_satisfied === false) {
+        NotificationService.sendPush(
+          null, // Admin FCM token would be fetched in production
+          '⚠️ Customer Not Satisfied',
+          `Customer reported dissatisfaction for Job #${req.params.id.slice(0, 8).toUpperCase()}`,
+          { job_id: req.params.id, type: 'customer_unsatisfied' }
+        ).catch(() => {});
+      }
+
+      const msg = result.customer_satisfied
+        ? 'End OTP verified. Customer is satisfied. Job closeout confirmed.'
+        : 'End OTP verified. Customer reported dissatisfaction. Job flagged for review.';
+      return sendSuccess(res, { job: result }, msg);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // POST /api/v1/jobs/:id/customer-request-otp (customer)
+  customerRequestStartOtp: async (req, res, next) => {
+    try {
+      const result = await JobService.customerRequestStartOtp(req.params.id, req.user.id);
+      // Notify the assigned technician
+      JobRepository.findById(req.params.id).then(fullJob => {
+        if (fullJob && fullJob.team_fcm_token) {
+          NotificationService.sendPush(
+            fullJob.team_fcm_token,
+            'Customer requested OTP',
+            `Customer ${fullJob.customer_name} has generated a start OTP. Please ask them for the code.`,
+            { job_id: fullJob.id, type: 'customer_otp_request' }
+          );
+        }
+      }).catch(() => {});
+      return sendSuccess(res, result, 'OTP generated. Show this code to your technician.');
     } catch (err) {
       next(err);
     }
@@ -221,6 +261,82 @@ const JobController = {
         }
       }).catch(() => {});
       return sendSuccess(res, { job }, 'Job transferred successfully');
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // ── Available Jobs & Requests ─────────────────────────────────────────
+
+  // GET /api/v1/jobs/available (field team)
+  getAvailableJobs: async (req, res, next) => {
+    try {
+      const jobs = await JobService.getAvailableJobs();
+      return sendSuccess(res, { jobs });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // POST /api/v1/jobs/:id/request (field team)
+  requestJob: async (req, res, next) => {
+    try {
+      const request = await JobService.requestJob(req.params.id, req.user.id);
+      return sendSuccess(res, { request }, 'Job request submitted', 201);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // GET /api/v1/jobs/requests (admin)
+  getJobRequests: async (req, res, next) => {
+    try {
+      const { status, limit, offset } = req.query;
+      const requests = await JobService.getJobRequests({
+        status,
+        limit: parseInt(limit) || 20,
+        offset: parseInt(offset) || 0,
+      });
+      return sendSuccess(res, { requests });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // PATCH /api/v1/jobs/requests/:requestId/approve (admin)
+  approveJobRequest: async (req, res, next) => {
+    try {
+      const result = await JobService.approveJobRequest(req.params.requestId);
+      // Notify the team member
+      JobRepository.findById(result.job_id).then(fullJob => {
+        if (fullJob) {
+          NotificationService.onTeamAssigned(
+            { fcm_token: fullJob.team_fcm_token },
+            fullJob
+          );
+        }
+      }).catch(() => {});
+      return sendSuccess(res, result, 'Request approved. Team assigned.');
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // PATCH /api/v1/jobs/requests/:requestId/reject (admin)
+  rejectJobRequest: async (req, res, next) => {
+    try {
+      const result = await JobService.rejectJobRequest(req.params.requestId);
+      return sendSuccess(res, result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // GET /api/v1/jobs/requests/count (admin dashboard)
+  getPendingRequestCount: async (req, res, next) => {
+    try {
+      const count = await JobService.getPendingRequestCount();
+      return sendSuccess(res, { pending_requests: count });
     } catch (err) {
       next(err);
     }

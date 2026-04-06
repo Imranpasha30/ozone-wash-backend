@@ -85,4 +85,8 @@ router.post('/create-order', authenticate, requireRole('customer'), PaymentContr
 router.post('/verify', authenticate, requireRole('customer'), PaymentController.verifyPayment);
 router.post('/refund', authenticate, requireRole('admin'), PaymentController.refundPayment);
 
+// AMC payment routes
+router.post('/amc/create-order', authenticate, requireRole('customer'), PaymentController.createAmcOrder);
+router.post('/amc/verify', authenticate, requireRole('customer'), PaymentController.verifyAmcPayment);
+
 module.exports = router;

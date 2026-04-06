@@ -66,6 +66,33 @@ const AuthRepository = {
     );
   },
 
+  findAllUsers: async ({ role, limit = 50, offset = 0 }) => {
+    let sql = `SELECT id, phone, name, role, lang, created_at FROM users`;
+    const params = [];
+    if (role) {
+      params.push(role);
+      sql += ` WHERE role = $${params.length}`;
+    }
+    sql += ` ORDER BY created_at DESC`;
+    params.push(limit);
+    sql += ` LIMIT $${params.length}`;
+    params.push(offset);
+    sql += ` OFFSET $${params.length}`;
+    const result = await db.query(sql, params);
+    return result.rows;
+  },
+
+  countUsers: async (role) => {
+    let sql = `SELECT COUNT(*) as count FROM users`;
+    const params = [];
+    if (role) {
+      params.push(role);
+      sql += ` WHERE role = $${params.length}`;
+    }
+    const result = await db.query(sql, params);
+    return parseInt(result.rows[0].count);
+  },
+
 };
 
 module.exports = AuthRepository;

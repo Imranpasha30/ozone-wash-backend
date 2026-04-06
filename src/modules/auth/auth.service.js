@@ -78,6 +78,14 @@ const AuthService = {
     return user;
   },
 
+  getAllUsers: async ({ role, limit, offset }) => {
+    const [users, total] = await Promise.all([
+      AuthRepository.findAllUsers({ role, limit, offset }),
+      AuthRepository.countUsers(role),
+    ]);
+    return { users, total };
+  },
+
 };
 
 module.exports = AuthService;

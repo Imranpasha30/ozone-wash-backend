@@ -20,7 +20,7 @@ const JobRepository = {
 
   findById: async (id) => {
     const result = await db.query(
-      `SELECT j.*,
+      `SELECT j.*, j.end_otp_satisfied, j.end_otp_unsatisfied, j.customer_satisfied,
         c.name as customer_name, c.phone as customer_phone, c.fcm_token as customer_fcm_token,
         t.name as team_name, t.phone as team_phone, t.fcm_token as team_fcm_token,
         b.address, b.tank_type, b.tank_size_litres, b.addons, b.amount_paise
@@ -54,7 +54,7 @@ const JobRepository = {
     let query = `SELECT j.*,
         c.name as customer_name, c.phone as customer_phone,
         t.name as team_name,
-        b.address, b.tank_type
+        b.address, b.tank_type, b.tank_size_litres, b.amount_paise
        FROM jobs j
        JOIN users c ON c.id = j.customer_id
        LEFT JOIN users t ON t.id = j.assigned_team_id
@@ -119,11 +119,14 @@ const JobRepository = {
     return result.rows[0];
   },
 
-  storeEndOtp: async (jobId, otp) => {
+  storeEndOtp: async (jobId, satisfiedOtp, unsatisfiedOtp) => {
     const result = await db.query(
-      `UPDATE jobs SET end_otp = $1, end_otp_verified = false, updated_at = NOW()
-       WHERE id = $2 RETURNING *`,
-      [otp, jobId]
+      `UPDATE jobs SET
+        end_otp_satisfied = $1, end_otp_unsatisfied = $2,
+        end_otp = $1, end_otp_verified = false,
+        customer_satisfied = NULL, updated_at = NOW()
+       WHERE id = $3 RETURNING *`,
+      [satisfiedOtp, unsatisfiedOtp, jobId]
     );
     return result.rows[0];
   },
@@ -137,11 +140,11 @@ const JobRepository = {
     return result.rows[0];
   },
 
-  verifyEndOtp: async (jobId) => {
+  verifyEndOtp: async (jobId, satisfied) => {
     const result = await db.query(
-      `UPDATE jobs SET end_otp_verified = true, updated_at = NOW()
-       WHERE id = $1 RETURNING *`,
-      [jobId]
+      `UPDATE jobs SET end_otp_verified = true, customer_satisfied = $1, updated_at = NOW()
+       WHERE id = $2 RETURNING *`,
+      [satisfied, jobId]
     );
     return result.rows[0];
   },
@@ -189,6 +192,103 @@ const JobRepository = {
        FROM jobs`
     );
     return result.rows[0];
+  },
+
+  // ── Available Jobs (unassigned, for field team to browse) ─────────────
+
+  findAvailable: async () => {
+    const result = await db.query(
+      `SELECT j.*,
+        c.name as customer_name, c.phone as customer_phone,
+        b.address, b.tank_type, b.tank_size_litres, b.addons
+       FROM jobs j
+       JOIN users c ON c.id = j.customer_id
+       LEFT JOIN bookings b ON b.id = j.booking_id
+       WHERE j.assigned_team_id IS NULL
+         AND j.status = 'scheduled'
+       ORDER BY j.scheduled_at ASC`
+    );
+    return result.rows;
+  },
+
+  // ── Job Requests ────────────────────────────────────────────────────
+
+  createRequest: async (jobId, teamId) => {
+    const result = await db.query(
+      `INSERT INTO job_requests (job_id, team_id, status)
+       VALUES ($1, $2, 'pending')
+       RETURNING *`,
+      [jobId, teamId]
+    );
+    return result.rows[0];
+  },
+
+  findRequestByJobAndTeam: async (jobId, teamId) => {
+    const result = await db.query(
+      `SELECT * FROM job_requests
+       WHERE job_id = $1 AND team_id = $2 AND status = 'pending'`,
+      [jobId, teamId]
+    );
+    return result.rows[0] || null;
+  },
+
+  findRequests: async ({ status, limit = 20, offset = 0 }) => {
+    let query = `SELECT jr.*,
+      j.scheduled_at, j.status as job_status,
+      u.name as team_name, u.phone as team_phone,
+      c.name as customer_name, c.phone as customer_phone,
+      b.tank_type, b.tank_size_litres, b.address
+     FROM job_requests jr
+     JOIN jobs j ON j.id = jr.job_id
+     JOIN users u ON u.id = jr.team_id
+     JOIN users c ON c.id = j.customer_id
+     LEFT JOIN bookings b ON b.id = j.booking_id
+     WHERE 1=1`;
+    const params = [];
+    let i = 1;
+    if (status) { query += ` AND jr.status = $${i++}`; params.push(status); }
+    query += ` ORDER BY jr.created_at DESC LIMIT $${i++} OFFSET $${i++}`;
+    params.push(limit, offset);
+    const result = await db.query(query, params);
+    return result.rows;
+  },
+
+  findRequestById: async (id) => {
+    const result = await db.query(
+      `SELECT jr.*,
+        j.assigned_team_id, j.status as job_status,
+        u.name as team_name, u.phone as team_phone, u.fcm_token as team_fcm_token
+       FROM job_requests jr
+       JOIN jobs j ON j.id = jr.job_id
+       JOIN users u ON u.id = jr.team_id
+       WHERE jr.id = $1`,
+      [id]
+    );
+    return result.rows[0] || null;
+  },
+
+  updateRequestStatus: async (id, status) => {
+    const result = await db.query(
+      `UPDATE job_requests SET status = $1, updated_at = NOW()
+       WHERE id = $2 RETURNING *`,
+      [status, id]
+    );
+    return result.rows[0];
+  },
+
+  rejectOtherRequests: async (jobId, approvedTeamId) => {
+    await db.query(
+      `UPDATE job_requests SET status = 'rejected', updated_at = NOW()
+       WHERE job_id = $1 AND team_id != $2 AND status = 'pending'`,
+      [jobId, approvedTeamId]
+    );
+  },
+
+  countPendingRequests: async () => {
+    const result = await db.query(
+      `SELECT COUNT(*) as count FROM job_requests WHERE status = 'pending'`
+    );
+    return parseInt(result.rows[0].count) || 0;
   },
 
 };

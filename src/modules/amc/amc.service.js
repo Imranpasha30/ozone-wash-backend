@@ -49,6 +49,8 @@ const AmcService = {
       start_date: startDate,
       end_date: endDate,
       amount_paise: PLAN_PRICES[data.plan_type],
+      status: 'pending_payment',
+      payment_status: 'pending',
     });
 
     return contract;

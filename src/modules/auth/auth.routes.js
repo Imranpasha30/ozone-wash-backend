@@ -1,7 +1,7 @@
 const express = require('express');
 const { body } = require('express-validator');
 const AuthController = require('./auth.controller');
-const { authenticate } = require('../../middleware/auth.middleware');
+const { authenticate, requireRole } = require('../../middleware/auth.middleware');
 
 const router = express.Router();
 
@@ -103,5 +103,8 @@ router.post('/verify-otp', verifyOtpValidation, AuthController.verifyOtp);
 
 // Protected route
 router.get('/profile', authenticate, AuthController.getProfile);
+
+// Admin route
+router.get('/users', authenticate, requireRole('admin'), AuthController.getAllUsers);
 
 module.exports = router;

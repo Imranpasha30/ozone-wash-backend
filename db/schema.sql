@@ -140,11 +140,14 @@ CREATE TABLE IF NOT EXISTS amc_contracts (
   start_date       DATE NOT NULL,
   end_date         DATE NOT NULL,
   renewal_pending  BOOLEAN DEFAULT false,
-  status           VARCHAR(20) DEFAULT 'active'
-                     CHECK (status IN ('active', 'paused', 'cancelled', 'expired')),
+  status           VARCHAR(20) DEFAULT 'pending_payment'
+                     CHECK (status IN ('pending_payment', 'active', 'paused', 'cancelled', 'expired')),
   customer_esign   TEXT,
   admin_esign      TEXT,
   amount_paise     INTEGER,
+  razorpay_order_id   TEXT,
+  razorpay_payment_id TEXT,
+  payment_status      VARCHAR(20) DEFAULT 'pending',
   job_type         VARCHAR(50) DEFAULT 'tank_cleaning',
   resource_type    VARCHAR(50) DEFAULT 'tank',
   created_at       TIMESTAMP DEFAULT NOW(),

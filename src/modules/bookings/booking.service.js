@@ -1,5 +1,6 @@
 const BookingRepository = require('./booking.repository');
 const JobRepository = require('../jobs/job.repository');
+const AmcRepository = require('../amc/amc.repository');
 
 // Pricing config — one-time service targets ~₹1500+
 const BASE_PRICES = {
@@ -14,14 +15,8 @@ const ADDON_PRICES = {
   advanced_testing: 1200,
 };
 
-const AMC_DISCOUNTS = {
-  monthly: 0.10,
-  bimonthly: 0.12,
-  quarterly: 0.15,
-  '4month': 0.17,
-  halfyearly: 0.20,
-  yearly: 0.25,
-};
+// AMC customers get FREE base cleaning (already paid via plan).
+// They only pay for optional addons + GST on addons.
 
 const BookingService = {
 
@@ -40,27 +35,26 @@ const BookingService = {
       return sum + (ADDON_PRICES[addon] || 0);
     }, 0);
 
-    let total = basePrice + addonTotal;
+    // AMC customers: base cleaning is FREE (already paid via AMC plan).
+    // They only pay for optional addons.
+    const amcCovered = !!amc_plan;
+    const chargeableBase = amcCovered ? 0 : basePrice;
 
-    // Apply AMC discount if applicable
-    let discountAmount = 0;
-    if (amc_plan && AMC_DISCOUNTS[amc_plan]) {
-      discountAmount = Math.round(total * AMC_DISCOUNTS[amc_plan]);
-      total = total - discountAmount;
-    }
+    let total = chargeableBase + addonTotal;
 
-    // Add 18% GST
-    const gst = total * 0.18;
+    // Add 18% GST on chargeable amount only
+    const gst = Math.round(total * 0.18);
     const grandTotal = Math.round(total + gst);
 
     // Note: base_price, addon_total, gst, grand_total are all in RUPEES.
     // Only amount_paise is in paise (for Razorpay).
     return {
-      base_price: basePrice,
+      base_price: basePrice,          // show original base for reference
+      amc_covered: amcCovered,        // true = base is free
       addon_total: addonTotal,
-      discount_amount: discountAmount,
+      discount_amount: amcCovered ? basePrice : 0,  // full base waived
       subtotal: Math.round(total),
-      gst: Math.round(gst),
+      gst,
       grand_total: grandTotal,
       amount_paise: grandTotal * 100,
     };
@@ -100,15 +94,23 @@ const BookingService = {
       throw { status: 400, message: 'Invalid payment method.' };
     }
 
-    // 3. Calculate price
+    // 3. Auto-detect active AMC for this customer
+    let activePlan = null;
+    try {
+      const contracts = await AmcRepository.findByCustomer(customerId);
+      const active = contracts.find(c => c.status === 'active');
+      if (active) activePlan = active.plan_type;
+    } catch (_) {}
+
+    // 4. Calculate price (AMC discount applied automatically if active)
     const pricing = BookingService.calculatePrice(
       data.tank_type,
       data.tank_size_litres,
       data.addons,
-      data.amc_plan
+      activePlan
     );
 
-    // 4. Create booking
+    // 5. Create booking
     const booking = await BookingRepository.create({
       customer_id: customerId,
       tank_type: data.tank_type,
@@ -118,12 +120,12 @@ const BookingService = {
       lng: data.lng || null,
       slot_time: data.slot_time,
       addons: data.addons || [],
-      amc_plan: data.amc_plan || null,
+      amc_plan: activePlan,
       payment_method: data.payment_method,
       amount_paise: pricing.amount_paise,
     });
 
-    // 5. Auto-create a job from this booking
+    // 6. Auto-create a job from this booking
     const job = await JobRepository.create({
       booking_id: booking.id,
       customer_id: customerId,

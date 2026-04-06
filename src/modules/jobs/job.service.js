@@ -119,29 +119,57 @@ const JobService = {
     return updated;
   },
 
-  // Generate end OTP and notify customer
+  // Generate end OTPs (satisfied + unsatisfied) and notify customer
   generateEndOtp: async (jobId, teamId) => {
     const job = await JobRepository.findById(jobId);
     if (!job) throw { status: 404, message: 'Job not found.' };
     if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
     if (job.status !== 'in_progress') throw { status: 400, message: 'Job must be in progress to generate end OTP.' };
 
-    const otp = generateOtp();
-    await JobRepository.storeEndOtp(jobId, otp);
+    // Generate two unique OTPs — one for satisfied, one for unsatisfied
+    const satisfiedOtp = generateOtp();
+    let unsatisfiedOtp = generateOtp();
+    while (unsatisfiedOtp === satisfiedOtp) {
+      unsatisfiedOtp = generateOtp();
+    }
+
+    await JobRepository.storeEndOtp(jobId, satisfiedOtp, unsatisfiedOtp);
     return { job_id: jobId, otp_sent: true };
   },
 
-  // Verify end OTP entered by agent
+  // Verify end OTP entered by agent — determines customer satisfaction
   verifyEndOtp: async (jobId, teamId, otp) => {
     const job = await JobRepository.findById(jobId);
     if (!job) throw { status: 404, message: 'Job not found.' };
     if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
     if (job.status !== 'in_progress') throw { status: 400, message: 'Job must be in progress to verify end OTP.' };
-    if (!job.end_otp) throw { status: 400, message: 'End OTP has not been generated yet.' };
-    if (job.end_otp !== otp) throw { status: 400, message: 'Invalid OTP. Please try again.' };
+    if (!job.end_otp_satisfied && !job.end_otp) throw { status: 400, message: 'End OTP has not been generated yet.' };
 
-    const updated = await JobRepository.verifyEndOtp(jobId);
-    return updated;
+    // Check which OTP was entered
+    let satisfied = null;
+    if (job.end_otp_satisfied && otp === job.end_otp_satisfied) {
+      satisfied = true;
+    } else if (job.end_otp_unsatisfied && otp === job.end_otp_unsatisfied) {
+      satisfied = false;
+    } else {
+      throw { status: 400, message: 'Invalid OTP. Please try again.' };
+    }
+
+    const updated = await JobRepository.verifyEndOtp(jobId, satisfied);
+    return { ...updated, customer_satisfied: satisfied };
+  },
+
+  // Customer requests start OTP generation (when technician is present)
+  customerRequestStartOtp: async (jobId, customerId) => {
+    const job = await JobRepository.findById(jobId);
+    if (!job) throw { status: 404, message: 'Job not found.' };
+    if (job.customer_id !== customerId) throw { status: 403, message: 'Access denied.' };
+    if (!job.assigned_team_id) throw { status: 400, message: 'No technician assigned yet.' };
+    if (job.status !== 'scheduled') throw { status: 400, message: `Cannot generate OTP for a job with status: ${job.status}` };
+
+    const otp = generateOtp();
+    await JobRepository.storeStartOtp(jobId, otp);
+    return { job_id: jobId, otp };
   },
 
   // ── Transfer ────────────────────────────────────────────────────────────
@@ -175,6 +203,66 @@ const JobService = {
   // Get today's stats (admin dashboard)
   getTodayStats: async (teamId = null) => {
     return await JobRepository.getTodayStats(teamId);
+  },
+
+  // ── Available Jobs & Requests ─────────────────────────────────────────
+
+  // Get unassigned scheduled jobs (field team can browse)
+  getAvailableJobs: async () => {
+    return await JobRepository.findAvailable();
+  },
+
+  // Field team requests a job
+  requestJob: async (jobId, teamId) => {
+    const job = await JobRepository.findById(jobId);
+    if (!job) throw { status: 404, message: 'Job not found.' };
+    if (job.assigned_team_id) throw { status: 400, message: 'This job is already assigned.' };
+    if (job.status !== 'scheduled') throw { status: 400, message: 'Only scheduled jobs can be requested.' };
+
+    // Check for duplicate pending request
+    const existing = await JobRepository.findRequestByJobAndTeam(jobId, teamId);
+    if (existing) throw { status: 400, message: 'You have already requested this job.' };
+
+    const request = await JobRepository.createRequest(jobId, teamId);
+    return request;
+  },
+
+  // Get all job requests (admin)
+  getJobRequests: async (filters) => {
+    return await JobRepository.findRequests(filters);
+  },
+
+  // Admin approves a job request (assigns the team)
+  approveJobRequest: async (requestId) => {
+    const request = await JobRepository.findRequestById(requestId);
+    if (!request) throw { status: 404, message: 'Request not found.' };
+    if (request.status !== 'pending') throw { status: 400, message: 'Request is no longer pending.' };
+    if (request.job_status !== 'scheduled') throw { status: 400, message: 'Job is no longer available.' };
+    if (request.assigned_team_id) throw { status: 400, message: 'Job is already assigned.' };
+
+    // Assign the team
+    await JobRepository.assignTeam(request.job_id, request.team_id);
+
+    // Approve this request and reject all other pending requests for this job
+    await JobRepository.updateRequestStatus(requestId, 'approved');
+    await JobRepository.rejectOtherRequests(request.job_id, request.team_id);
+
+    return { job_id: request.job_id, team_id: request.team_id, team_name: request.team_name };
+  },
+
+  // Admin rejects a job request
+  rejectJobRequest: async (requestId) => {
+    const request = await JobRepository.findRequestById(requestId);
+    if (!request) throw { status: 404, message: 'Request not found.' };
+    if (request.status !== 'pending') throw { status: 400, message: 'Request is no longer pending.' };
+
+    await JobRepository.updateRequestStatus(requestId, 'rejected');
+    return { message: 'Request rejected.' };
+  },
+
+  // Count pending requests (for admin dashboard)
+  getPendingRequestCount: async () => {
+    return await JobRepository.countPendingRequests();
   },
 
 };

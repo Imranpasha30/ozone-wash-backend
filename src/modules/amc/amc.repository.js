@@ -8,8 +8,8 @@ const AmcRepository = {
       `INSERT INTO amc_contracts (
         customer_id, tank_ids, plan_type, sla_terms,
         start_date, end_date, status, amount_paise,
-        job_type, resource_type
-      ) VALUES ($1,$2,$3,$4,$5,$6,'active',$7,$8,$9)
+        payment_status, job_type, resource_type
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       RETURNING *`,
       [
         data.customer_id,
@@ -18,7 +18,9 @@ const AmcRepository = {
         JSON.stringify(data.sla_terms || {}),
         data.start_date,
         data.end_date,
+        data.status || 'pending_payment',
         data.amount_paise || 0,
+        data.payment_status || 'pending',
         'tank_cleaning',
         'tank',
       ]
@@ -85,6 +87,20 @@ const AmcRepository = {
        SET customer_esign = $1, admin_esign = $2, updated_at = NOW()
        WHERE id = $3 RETURNING *`,
       [customerEsign, adminEsign, id]
+    );
+    return result.rows[0];
+  },
+
+  // Update payment fields on a contract
+  updatePayment: async (id, { razorpay_order_id, razorpay_payment_id, payment_status }) => {
+    const result = await db.query(
+      `UPDATE amc_contracts
+       SET razorpay_order_id = COALESCE($1, razorpay_order_id),
+           razorpay_payment_id = COALESCE($2, razorpay_payment_id),
+           payment_status = COALESCE($3, payment_status),
+           updated_at = NOW()
+       WHERE id = $4 RETURNING *`,
+      [razorpay_order_id, razorpay_payment_id, payment_status, id]
     );
     return result.rows[0];
   },

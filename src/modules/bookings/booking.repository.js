@@ -24,10 +24,15 @@ const BookingRepository = {
   findById: async (id) => {
     const result = await db.query(
       `SELECT b.*, u.name as customer_name, u.phone as customer_phone,
-              j.id as job_id
+              j.id as job_id, j.status as job_status,
+              j.assigned_team_id, j.start_otp, j.end_otp,
+              j.start_otp_verified, j.end_otp_verified,
+              j.end_otp_satisfied, j.end_otp_unsatisfied, j.customer_satisfied,
+              t.name as team_name
        FROM bookings b
        JOIN users u ON u.id = b.customer_id
        LEFT JOIN jobs j ON j.booking_id = b.id
+       LEFT JOIN users t ON t.id = j.assigned_team_id
        WHERE b.id = $1`,
       [id]
     );
@@ -36,16 +41,29 @@ const BookingRepository = {
 
   findByCustomer: async (customerId) => {
     const result = await db.query(
-      `SELECT * FROM bookings WHERE customer_id = $1 ORDER BY created_at DESC`,
+      `SELECT b.*, j.id as job_id, j.status as job_status,
+              j.assigned_team_id, j.start_otp, j.end_otp,
+              j.start_otp_verified, j.end_otp_verified,
+              j.end_otp_satisfied, j.end_otp_unsatisfied, j.customer_satisfied,
+              t.name as team_name
+       FROM bookings b
+       LEFT JOIN jobs j ON j.booking_id = b.id
+       LEFT JOIN users t ON t.id = j.assigned_team_id
+       WHERE b.customer_id = $1
+       ORDER BY b.created_at DESC`,
       [customerId]
     );
     return result.rows;
   },
 
   findAll: async ({ status, date, limit = 20, offset = 0 }) => {
-    let query = `SELECT b.*, u.name as customer_name, u.phone as customer_phone
+    let query = `SELECT b.*, u.name as customer_name, u.phone as customer_phone,
+                        j.id as job_id, j.status as job_status,
+                        j.assigned_team_id, t.name as team_name
                  FROM bookings b
                  JOIN users u ON u.id = b.customer_id
+                 LEFT JOIN jobs j ON j.booking_id = b.id
+                 LEFT JOIN users t ON t.id = j.assigned_team_id
                  WHERE 1=1`;
     const params = [];
     let i = 1;

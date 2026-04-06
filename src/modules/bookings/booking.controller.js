@@ -21,16 +21,30 @@ const BookingController = {
   },
 
   // GET /api/v1/bookings/price?tank_type=overhead&tank_size_litres=500&addons=lime_treatment
+  // AMC discount is auto-detected from the logged-in user's active contract
   getPrice: async (req, res, next) => {
     try {
-      const { tank_type, tank_size_litres, addons, amc_plan } = req.query;
+      const { tank_type, tank_size_litres, addons } = req.query;
       const addonList = addons ? addons.split(',') : [];
+
+      // Auto-detect active AMC for this user
+      let activePlan = null;
+      if (req.user) {
+        try {
+          const AmcRepository = require('../amc/amc.repository');
+          const contracts = await AmcRepository.findByCustomer(req.user.id);
+          const active = contracts.find(c => c.status === 'active');
+          if (active) activePlan = active.plan_type;
+        } catch (_) {}
+      }
+
       const pricing = BookingService.calculatePrice(
         tank_type,
         parseFloat(tank_size_litres) || 500,
         addonList,
-        amc_plan
+        activePlan
       );
+      pricing.amc_plan = activePlan;
       return sendSuccess(res, { pricing });
     } catch (err) {
       next(err);

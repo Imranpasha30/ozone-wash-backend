@@ -93,7 +93,7 @@ const priceValidation = [
 
 // Public
 router.get('/slots', slotsValidation, BookingController.getSlots);
-router.get('/price', priceValidation, BookingController.getPrice);
+router.get('/price', authenticate, priceValidation, BookingController.getPrice);
 
 // Customer
 router.post('/', authenticate, requireRole('customer'), createBookingValidation, BookingController.createBooking);

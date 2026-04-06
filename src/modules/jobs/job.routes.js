@@ -60,10 +60,18 @@ const listJobsValidation = [
 
 // Admin routes
 router.get('/', authenticate, requireRole('admin'), listJobsValidation, JobController.getAllJobs);
-router.get('/stats', authenticate, requireRole('admin'), JobController.getTodayStats);
+router.get('/stats', authenticate, requireRole('admin', 'field_team'), JobController.getTodayStats);
 router.get('/teams', authenticate, requireRole('admin'), JobController.getTeamList);
 router.patch('/:id/assign', authenticate, requireRole('admin'), assignTeamValidation, JobController.assignTeam);
 router.patch('/:id/complete', authenticate, requireRole('admin', 'field_team'), JobController.completeJob);
+
+// Job requests (field team requests, admin manages)
+router.get('/available', authenticate, requireRole('field_team'), JobController.getAvailableJobs);
+router.post('/:id/request', authenticate, requireRole('field_team'), JobController.requestJob);
+router.get('/requests', authenticate, requireRole('admin'), JobController.getJobRequests);
+router.get('/requests/count', authenticate, requireRole('admin'), JobController.getPendingRequestCount);
+router.patch('/requests/:requestId/approve', authenticate, requireRole('admin'), JobController.approveJobRequest);
+router.patch('/requests/:requestId/reject', authenticate, requireRole('admin'), JobController.rejectJobRequest);
 
 // Field team routes
 router.get('/my', authenticate, requireRole('field_team'), JobController.getMyJobs);
@@ -74,6 +82,9 @@ router.post('/:id/generate-start-otp', authenticate, requireRole('field_team'), 
 router.post('/:id/verify-start-otp', authenticate, requireRole('field_team'), otpValidation, JobController.verifyStartOtp);
 router.post('/:id/generate-end-otp', authenticate, requireRole('field_team'), JobController.generateEndOtp);
 router.post('/:id/verify-end-otp', authenticate, requireRole('field_team'), otpValidation, JobController.verifyEndOtp);
+
+// Customer OTP request
+router.post('/:id/customer-request-otp', authenticate, requireRole('customer'), JobController.customerRequestStartOtp);
 
 // Transfer (field team or admin)
 router.post('/:id/transfer', authenticate, requireRole('field_team', 'admin'), transferValidation, JobController.transferJob);

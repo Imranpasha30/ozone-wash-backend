@@ -1,5 +1,6 @@
 const PaymentService = require('../../services/payment.service');
 const BookingRepository = require('../bookings/booking.repository');
+const AmcRepository = require('../amc/amc.repository');
 const NotificationService = require('../../services/notification.service');
 const { sendSuccess, sendError } = require('../../utils/response');
 
@@ -119,6 +120,83 @@ const PaymentController = {
       });
 
       return sendSuccess(res, { refund }, 'Refund initiated successfully');
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // POST /api/v1/payments/amc/create-order
+  createAmcOrder: async (req, res, next) => {
+    try {
+      const { contract_id } = req.body;
+      if (!contract_id) {
+        return sendError(res, 'Contract ID is required', 400);
+      }
+
+      const contract = await AmcRepository.findById(contract_id);
+      if (!contract) {
+        return sendError(res, 'Contract not found', 404);
+      }
+
+      if (contract.customer_id !== req.user.id) {
+        return sendError(res, 'Access denied', 403);
+      }
+
+      if (contract.payment_status === 'paid') {
+        return sendError(res, 'Contract is already paid', 400);
+      }
+
+      const order = await PaymentService.createOrder(
+        contract.amount_paise,
+        contract_id
+      );
+
+      await AmcRepository.updatePayment(contract_id, {
+        razorpay_order_id: order.order_id,
+        razorpay_payment_id: null,
+        payment_status: 'pending',
+      });
+
+      return sendSuccess(res, {
+        order_id: order.order_id,
+        amount: order.amount,
+        currency: order.currency,
+        contract_id,
+        key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
+      }, 'AMC payment order created');
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // POST /api/v1/payments/amc/verify
+  verifyAmcPayment: async (req, res, next) => {
+    try {
+      const { contract_id, razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+      if (!contract_id || !razorpay_order_id || !razorpay_payment_id) {
+        return sendError(res, 'Missing payment details', 400);
+      }
+
+      PaymentService.verifyPayment(
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature
+      );
+
+      await AmcRepository.updatePayment(contract_id, {
+        razorpay_order_id,
+        razorpay_payment_id,
+        payment_status: 'paid',
+      });
+
+      // Activate the contract
+      await AmcRepository.updateStatus(contract_id, 'active');
+
+      return sendSuccess(res, {
+        payment_status: 'paid',
+        contract_id,
+      }, 'AMC payment verified successfully');
     } catch (err) {
       next(err);
     }

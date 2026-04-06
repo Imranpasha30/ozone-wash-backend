@@ -45,6 +45,21 @@ const AuthController = {
     }
   },
 
+  // GET /api/v1/auth/users (admin)
+  getAllUsers: async (req, res, next) => {
+    try {
+      const { role, limit = 50, offset = 0 } = req.query;
+      const result = await AuthService.getAllUsers({
+        role,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+      });
+      return sendSuccess(res, result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
 };
 
 module.exports = AuthController;
