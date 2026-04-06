@@ -1,11 +1,11 @@
 const BookingRepository = require('./booking.repository');
 const JobRepository = require('../jobs/job.repository');
 
-// Pricing config
+// Pricing config — one-time service targets ~₹1500+
 const BASE_PRICES = {
-  overhead: 800,
-  underground: 1200,
-  sump: 1000,
+  overhead: 1200,
+  underground: 1800,
+  sump: 1500,
 };
 
 const ADDON_PRICES = {
@@ -32,7 +32,7 @@ const BookingService = {
 
     // Extra charge for large tanks (above 1000 litres)
     if (tank_size_litres > 1000) {
-      basePrice += Math.floor((tank_size_litres - 1000) / 500) * 200;
+      basePrice += Math.floor((tank_size_litres - 1000) / 500) * 300;
     }
 
     // Add addon prices
