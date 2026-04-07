@@ -1,5 +1,9 @@
 const { Pool } = require('pg');
+const dns = require('dns');
 require('dotenv').config();
+
+// Force IPv4 — Railway does not support IPv6 connections to Supabase
+dns.setDefaultResultOrder('ipv4first');
 
 if (!process.env.DATABASE_URL) {
   console.error('❌ DATABASE_URL is not set. Set it in Railway environment variables.');
