@@ -13,6 +13,9 @@ const { errorHandler, notFound } = require('./middleware/error.middleware');
 
 const app = express();
 
+// Trust Railway's reverse proxy — required for correct IP in rate limiters
+app.set('trust proxy', 1);
+
 // ── Security Headers ─────────────────────────────────────────────────────────
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }, // Allow R2 image serving
