@@ -43,9 +43,35 @@ const AmcRepository = {
   // Find all contracts for a customer
   findByCustomer: async (customerId) => {
     const result = await db.query(
-      `SELECT * FROM amc_contracts
-       WHERE customer_id = $1
-       ORDER BY created_at DESC`,
+      `SELECT a.*,
+        (SELECT COUNT(*) FROM bookings b
+         WHERE b.customer_id = a.customer_id
+           AND b.amc_plan IS NOT NULL
+           AND b.status = 'completed'
+           AND b.created_at >= a.start_date
+           AND b.created_at <= a.end_date
+        ) as services_availed,
+        GREATEST(0,
+          CASE a.plan_type
+            WHEN 'monthly' THEN 1
+            WHEN 'bimonthly' THEN 2
+            WHEN 'quarterly' THEN 3
+            WHEN '4month' THEN 4
+            WHEN 'halfyearly' THEN 6
+            WHEN 'yearly' THEN 12
+            ELSE 1
+          END -
+          (SELECT COUNT(*) FROM bookings b
+           WHERE b.customer_id = a.customer_id
+             AND b.amc_plan IS NOT NULL
+             AND b.status = 'completed'
+             AND b.created_at >= a.start_date
+             AND b.created_at <= a.end_date
+          )
+        ) as services_remaining
+       FROM amc_contracts a
+       WHERE a.customer_id = $1
+       ORDER BY a.created_at DESC`,
       [customerId]
     );
     return result.rows;

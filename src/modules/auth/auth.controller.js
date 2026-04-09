@@ -35,6 +35,21 @@ const AuthController = {
     }
   },
 
+  // PATCH /api/v1/auth/profile
+  updateProfile: async (req, res, next) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return sendError(res, 'Validation failed', 400, errors.array());
+      }
+      const { name, email } = req.body;
+      const user = await AuthService.updateProfile(req.user.id, { name, email });
+      return sendSuccess(res, { user }, 'Profile updated');
+    } catch (err) {
+      next(err);
+    }
+  },
+
   // GET /api/v1/auth/profile
   getProfile: async (req, res, next) => {
     try {

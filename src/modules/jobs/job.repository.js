@@ -23,7 +23,8 @@ const JobRepository = {
       `SELECT j.*, j.end_otp_satisfied, j.end_otp_unsatisfied, j.customer_satisfied,
         c.name as customer_name, c.phone as customer_phone, c.fcm_token as customer_fcm_token,
         t.name as team_name, t.phone as team_phone, t.fcm_token as team_fcm_token,
-        b.address, b.tank_type, b.tank_size_litres, b.addons, b.amount_paise
+        b.address, b.tank_type, b.tank_size_litres, b.addons, b.amount_paise,
+        b.amc_plan, b.property_type, b.contact_name, b.contact_phone
        FROM jobs j
        JOIN users c ON c.id = j.customer_id
        LEFT JOIN users t ON t.id = j.assigned_team_id
@@ -170,17 +171,42 @@ const JobRepository = {
   getTodayStats: async (teamId = null) => {
     if (teamId) {
       // Field team stats — scoped to their assigned jobs
-      const result = await db.query(
-        `SELECT
-          COUNT(*) as total_assigned,
-          COUNT(*) FILTER (WHERE status = 'scheduled') as pending,
-          COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress,
-          COUNT(*) FILTER (WHERE status = 'completed' AND DATE(completed_at) = CURRENT_DATE) as completed_today
-         FROM jobs
-         WHERE assigned_team_id = $1 AND status NOT IN ('cancelled')`,
-        [teamId]
-      );
-      return result.rows[0];
+      const [statsRes, streakRes] = await Promise.all([
+        db.query(
+          `SELECT
+            COUNT(*) as total_assigned,
+            COUNT(*) FILTER (WHERE status = 'scheduled') as pending,
+            COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress,
+            COUNT(*) FILTER (WHERE status = 'completed' AND DATE(completed_at) = CURRENT_DATE) as completed_today,
+            COUNT(*) FILTER (WHERE status = 'completed' AND DATE(completed_at) >= CURRENT_DATE - INTERVAL '7 days') as completed_this_week,
+            COUNT(*) FILTER (WHERE status = 'completed' AND DATE(completed_at) >= DATE_TRUNC('month', CURRENT_DATE)) as completed_this_month
+           FROM jobs
+           WHERE assigned_team_id = $1 AND status NOT IN ('cancelled')`,
+          [teamId]
+        ),
+        // Streak: count consecutive days with at least 1 completed job (going back from today)
+        db.query(
+          `WITH daily AS (
+            SELECT DATE(completed_at) as day
+            FROM jobs
+            WHERE assigned_team_id = $1 AND status = 'completed' AND completed_at IS NOT NULL
+            GROUP BY DATE(completed_at)
+            ORDER BY day DESC
+          ),
+          numbered AS (
+            SELECT day, ROW_NUMBER() OVER (ORDER BY day DESC) as rn
+            FROM daily
+          )
+          SELECT COUNT(*) as streak_days
+          FROM numbered
+          WHERE day = CURRENT_DATE - (rn - 1) * INTERVAL '1 day'`,
+          [teamId]
+        ),
+      ]);
+      return {
+        ...statsRes.rows[0],
+        streak_days: parseInt(streakRes.rows[0]?.streak_days || '0'),
+      };
     }
     // Admin stats — global, today-focused
     const result = await db.query(

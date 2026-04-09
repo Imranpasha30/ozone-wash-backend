@@ -75,6 +75,7 @@ router.patch('/requests/:requestId/reject', authenticate, requireRole('admin'), 
 
 // Field team routes
 router.get('/my', authenticate, requireRole('field_team'), JobController.getMyJobs);
+router.get('/route-optimize', authenticate, requireRole('field_team'), JobController.optimizeRoute);
 router.patch('/:id/start', authenticate, requireRole('field_team'), JobController.startJob);
 
 // OTP routes (field team)

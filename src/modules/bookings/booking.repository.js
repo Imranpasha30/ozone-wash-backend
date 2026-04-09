@@ -5,16 +5,21 @@ const BookingRepository = {
   create: async (data) => {
     const result = await db.query(
       `INSERT INTO bookings (
-        customer_id, tank_type, tank_size_litres, address, lat, lng,
+        customer_id, tank_type, tank_size_litres, tanks, address, lat, lng,
         slot_time, addons, amc_plan, payment_method, amount_paise,
+        property_type, contact_name, contact_phone,
         job_type, resource_type
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
       RETURNING *`,
       [
         data.customer_id, data.tank_type, data.tank_size_litres,
+        data.tanks ? JSON.stringify(data.tanks) : null,
         data.address, data.lat, data.lng, data.slot_time,
         JSON.stringify(data.addons || []), data.amc_plan,
         data.payment_method, data.amount_paise,
+        data.property_type || 'residential',
+        data.contact_name || null,
+        data.contact_phone || null,
         'tank_cleaning', 'tank'
       ]
     );

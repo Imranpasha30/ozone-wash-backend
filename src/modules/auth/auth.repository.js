@@ -29,6 +29,15 @@ const AuthRepository = {
     return result.rows[0];
   },
 
+  updateProfile: async (userId, { name, email }) => {
+    const result = await db.query(
+      `UPDATE users SET name = $1, email = $2 WHERE id = $3
+       RETURNING id, phone, email, role, name, lang`,
+      [name ?? null, email ?? null, userId]
+    );
+    return result.rows[0];
+  },
+
   updateFcmToken: async (userId, fcmToken) => {
     await db.query(
       'UPDATE users SET fcm_token = $1 WHERE id = $2',

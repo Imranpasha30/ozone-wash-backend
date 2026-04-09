@@ -42,12 +42,19 @@ CREATE TABLE IF NOT EXISTS bookings (
   payment_status      VARCHAR(20) DEFAULT 'pending',
   razorpay_order_id   TEXT,
   razorpay_payment_id TEXT,
-  amount_paise        INTEGER,
-  status              VARCHAR(20) DEFAULT 'pending',
-  job_type            VARCHAR(50) DEFAULT 'tank_cleaning',
-  resource_type       VARCHAR(50) DEFAULT 'tank',
-  created_at          TIMESTAMP DEFAULT NOW(),
-  updated_at          TIMESTAMP DEFAULT NOW()
+  amount_paise             INTEGER,
+  status                   VARCHAR(20) DEFAULT 'pending',
+  job_type                 VARCHAR(50) DEFAULT 'tank_cleaning',
+  resource_type            VARCHAR(50) DEFAULT 'tank',
+  tanks                    JSONB,
+  property_type            VARCHAR(50) DEFAULT 'residential',
+  contact_name             VARCHAR(255),
+  contact_phone            VARCHAR(15),
+  eco_discount_pct         DECIMAL,
+  eco_discount_amount      INTEGER DEFAULT 0,
+  eco_discount_label       VARCHAR(100),
+  created_at               TIMESTAMP DEFAULT NOW(),
+  updated_at               TIMESTAMP DEFAULT NOW()
 );
 
 -- JOBS
@@ -66,12 +73,15 @@ CREATE TABLE IF NOT EXISTS jobs (
   location_lat     DECIMAL,
   location_lng     DECIMAL,
   notes            TEXT,
-  start_otp            VARCHAR(6),
-  end_otp              VARCHAR(6),
-  start_otp_verified   BOOLEAN DEFAULT false,
-  end_otp_verified     BOOLEAN DEFAULT false,
-  created_at       TIMESTAMP DEFAULT NOW(),
-  updated_at       TIMESTAMP DEFAULT NOW()
+  start_otp              VARCHAR(6),
+  end_otp                VARCHAR(6),
+  end_otp_satisfied      VARCHAR(6),
+  end_otp_unsatisfied    VARCHAR(6),
+  customer_satisfied     BOOLEAN,
+  start_otp_verified     BOOLEAN DEFAULT false,
+  end_otp_verified       BOOLEAN DEFAULT false,
+  created_at             TIMESTAMP DEFAULT NOW(),
+  updated_at             TIMESTAMP DEFAULT NOW()
 );
 
 -- COMPLIANCE LOGS
@@ -84,6 +94,8 @@ CREATE TABLE IF NOT EXISTS compliance_logs (
   photo_after_url     TEXT,
   ozone_exposure_mins DECIMAL,
   microbial_test_url  TEXT,
+  microbial_result    VARCHAR(10) CHECK (microbial_result IN ('pass', 'fail')),
+  microbial_notes     TEXT,
   chemical_type       VARCHAR(100),
   chemical_qty_ml     DECIMAL,
   ppe_list            JSONB DEFAULT '[]',
@@ -122,6 +134,7 @@ CREATE TABLE IF NOT EXISTS hygiene_certificates (
   qr_code_url        TEXT,
   digital_signature  TEXT,
   valid_until        DATE,
+  badge_level        VARCHAR(20) CHECK (badge_level IN ('bronze', 'silver', 'gold', 'platinum')),
   status             VARCHAR(20) DEFAULT 'active'
                        CHECK (status IN ('active', 'revoked', 'expired')),
   revoked_reason     TEXT,

@@ -30,22 +30,25 @@ const ComplianceRepository = {
         job_id, step_number, step_name,
         photo_before_url, photo_after_url,
         ozone_exposure_mins, microbial_test_url,
+        microbial_result, microbial_notes,
         chemical_type, chemical_qty_ml,
         ppe_list, gps_lat, gps_lng, completed,
         job_type, resource_type
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
       ON CONFLICT (job_id, step_number)
       DO UPDATE SET
         photo_before_url = $4,
         photo_after_url = $5,
         ozone_exposure_mins = $6,
         microbial_test_url = $7,
-        chemical_type = $8,
-        chemical_qty_ml = $9,
-        ppe_list = $10,
-        gps_lat = $11,
-        gps_lng = $12,
-        completed = $13,
+        microbial_result = $8,
+        microbial_notes = $9,
+        chemical_type = $10,
+        chemical_qty_ml = $11,
+        ppe_list = $12,
+        gps_lat = $13,
+        gps_lng = $14,
+        completed = $15,
         logged_at = NOW()
       RETURNING *`,
       [
@@ -56,6 +59,8 @@ const ComplianceRepository = {
         data.photo_after_url || null,
         data.ozone_exposure_mins || null,
         data.microbial_test_url || null,
+        data.microbial_result || null,
+        data.microbial_notes || null,
         data.chemical_type || null,
         data.chemical_qty_ml || null,
         JSON.stringify(data.ppe_list || []),

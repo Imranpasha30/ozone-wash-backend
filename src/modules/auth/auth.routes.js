@@ -101,8 +101,12 @@ const verifyOtpValidation = [
 router.post('/send-otp', sendOtpValidation, AuthController.sendOtp);
 router.post('/verify-otp', verifyOtpValidation, AuthController.verifyOtp);
 
-// Protected route
+// Protected routes
 router.get('/profile', authenticate, AuthController.getProfile);
+router.patch('/profile', authenticate, [
+  body('name').optional().trim().isLength({ min: 2, max: 100 }).withMessage('Name must be 2–100 characters'),
+  body('email').optional().trim().isEmail().withMessage('Enter a valid email address'),
+], AuthController.updateProfile);
 
 // Admin route
 router.get('/users', authenticate, requireRole('admin'), AuthController.getAllUsers);

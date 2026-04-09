@@ -70,6 +70,12 @@ const AuthService = {
     };
   },
 
+  updateProfile: async (userId, { name, email }) => {
+    const user = await AuthRepository.updateProfile(userId, { name, email });
+    if (!user) throw { status: 404, message: 'User not found.' };
+    return user;
+  },
+
   getProfile: async (userId) => {
     const user = await AuthRepository.findById(userId);
     if (!user) {

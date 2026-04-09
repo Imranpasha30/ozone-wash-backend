@@ -33,6 +33,19 @@ const JobController = {
     }
   },
 
+  // GET /api/v1/jobs/route-optimize (field team)
+  optimizeRoute: async (req, res, next) => {
+    try {
+      const { lat, lng } = req.query;
+      const originLat = lat ? parseFloat(lat) : null;
+      const originLng = lng ? parseFloat(lng) : null;
+      const result = await JobService.optimizeRoute(req.user.id, originLat, originLng);
+      return sendSuccess(res, result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
   // GET /api/v1/jobs/stats (admin dashboard)
   getTodayStats: async (req, res, next) => {
     try {

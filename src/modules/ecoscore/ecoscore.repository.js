@@ -44,6 +44,20 @@ const EcoScoreRepository = {
     return result.rows[0] || null;
   },
 
+  // Get most recent eco score for a customer (for loyalty discount)
+  findLatestByCustomer: async (customerId) => {
+    const result = await db.query(
+      `SELECT e.eco_score, e.badge_level
+       FROM eco_metrics_log e
+       JOIN jobs j ON j.id = e.job_id
+       WHERE j.customer_id = $1
+       ORDER BY e.created_at DESC
+       LIMIT 1`,
+      [customerId]
+    );
+    return result.rows[0] || null;
+  },
+
   // Get team leaderboard
   getTeamLeaderboard: async () => {
     const result = await db.query(

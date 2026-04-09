@@ -1,4 +1,5 @@
 const JobRepository = require('./job.repository');
+const RouteService = require('../../services/route.service');
 const crypto = require('crypto');
 
 const generateOtp = () => {
@@ -263,6 +264,15 @@ const JobService = {
   // Count pending requests (for admin dashboard)
   getPendingRequestCount: async () => {
     return await JobRepository.countPendingRequests();
+  },
+
+  // Optimize route for field team's day jobs
+  optimizeRoute: async (teamId, originLat, originLng) => {
+    const jobs = await JobRepository.findByTeam(teamId);
+    // Only optimize scheduled/in_progress jobs
+    const active = jobs.filter(j => j.status === 'scheduled' || j.status === 'in_progress');
+    if (active.length === 0) return { optimized: [], method: 'none' };
+    return await RouteService.optimizeRoute(active, originLat, originLng);
   },
 
 };

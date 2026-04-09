@@ -11,7 +11,7 @@ const amcRoutes = require('../modules/amc/amc.routes');
 const uploadRoutes = require('./upload.routes');
 const paymentRoutes = require('../modules/payments/payment.routes');
 const incidentRoutes = require('../modules/incidents/incident.routes');
-
+const livestreamRoutes = require('../modules/livestream/livestream.routes');
 
 router.use('/auth', authRoutes);
 router.use('/bookings', bookingRoutes);
@@ -23,6 +23,7 @@ router.use('/amc', amcRoutes);
 router.use('/upload', uploadRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/incidents', incidentRoutes);
+router.use('/livestream', livestreamRoutes);
 
 
 router.get('/health', (req, res) => {
