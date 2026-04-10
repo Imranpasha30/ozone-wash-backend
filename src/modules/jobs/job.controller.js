@@ -345,6 +345,69 @@ const JobController = {
     }
   },
 
+  // GET /api/v1/jobs/conflict-check?team_id=&scheduled_at=&exclude_job_id=
+  checkConflict: async (req, res, next) => {
+    try {
+      const { team_id, scheduled_at, exclude_job_id } = req.query;
+      if (!team_id || !scheduled_at) return sendError(res, 'team_id and scheduled_at are required', 400);
+      const result = await JobService.checkConflict(team_id, scheduled_at, exclude_job_id || null);
+      return sendSuccess(res, result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // POST /api/v1/jobs/:id/raise-concern (field team)
+  raiseConcern: async (req, res, next) => {
+    try {
+      const { message } = req.body;
+      const job = await JobService.raiseConcern(req.params.id, req.user.id, message);
+      // Notify admin
+      NotificationService.sendPush(
+        null,
+        '⚠️ Schedule Conflict Raised',
+        `${req.user.name || 'A team member'} flagged a scheduling conflict on Job #${req.params.id.slice(0, 8).toUpperCase()}`,
+        { job_id: req.params.id, type: 'concern_raised' }
+      ).catch(() => {});
+      return sendSuccess(res, { job }, 'Concern raised. Admin has been notified.');
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // GET /api/v1/jobs/concerns (admin)
+  getConcerns: async (_req, res, next) => {
+    try {
+      const concerns = await JobService.getConcerns();
+      return sendSuccess(res, { concerns });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // PATCH /api/v1/jobs/:id/resolve-concern (admin)
+  resolveConcern: async (req, res, next) => {
+    try {
+      const job = await JobService.resolveConcern(req.params.id);
+      // Notify field team member that concern is resolved
+      if (job?.concern_raised_by) {
+        JobRepository.findById(req.params.id).then(fullJob => {
+          if (fullJob?.team_fcm_token) {
+            NotificationService.sendPush(
+              fullJob.team_fcm_token,
+              '✅ Concern Resolved',
+              `Admin has resolved your scheduling concern for Job #${req.params.id.slice(0, 8).toUpperCase()}.`,
+              { job_id: req.params.id, type: 'concern_resolved' }
+            );
+          }
+        }).catch(() => {});
+      }
+      return sendSuccess(res, { job }, 'Concern resolved.');
+    } catch (err) {
+      next(err);
+    }
+  },
+
   // GET /api/v1/jobs/requests/count (admin dashboard)
   getPendingRequestCount: async (req, res, next) => {
     try {

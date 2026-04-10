@@ -266,6 +266,37 @@ const JobService = {
     return await JobRepository.countPendingRequests();
   },
 
+  // ── Conflict Detection & Concerns ────────────────────────────────────────
+
+  // Check if a team has a conflicting job at the given time (±60 min)
+  checkConflict: async (teamId, scheduledAt, excludeJobId = null) => {
+    const conflicts = await JobRepository.checkConflict(teamId, scheduledAt, excludeJobId);
+    return { has_conflict: conflicts.length > 0, conflicts };
+  },
+
+  // Field team raises a scheduling concern
+  raiseConcern: async (jobId, teamId, message) => {
+    const job = await JobRepository.findById(jobId);
+    if (!job) throw { status: 404, message: 'Job not found.' };
+    if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
+    if (!message?.trim()) throw { status: 400, message: 'Concern message is required.' };
+    const updated = await JobRepository.raiseConcern(jobId, teamId, message.trim());
+    if (!updated) throw { status: 400, message: 'Could not raise concern. Job not found or not assigned to you.' };
+    return updated;
+  },
+
+  // Admin: get all unresolved concerns
+  getConcerns: async () => {
+    return await JobRepository.findConcerns();
+  },
+
+  // Admin: resolve a concern
+  resolveConcern: async (jobId) => {
+    const job = await JobRepository.findById(jobId);
+    if (!job) throw { status: 404, message: 'Job not found.' };
+    return await JobRepository.resolveConcern(jobId);
+  },
+
   // Optimize route for field team's day jobs
   optimizeRoute: async (teamId, originLat, originLng) => {
     const jobs = await JobRepository.findByTeam(teamId);

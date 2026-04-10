@@ -90,6 +90,12 @@ router.post('/:id/customer-request-otp', authenticate, requireRole('customer'), 
 // Transfer (field team or admin)
 router.post('/:id/transfer', authenticate, requireRole('field_team', 'admin'), transferValidation, JobController.transferJob);
 
+// Conflict detection & concerns
+router.get('/conflict-check', authenticate, requireRole('admin', 'field_team'), JobController.checkConflict);
+router.post('/:id/raise-concern', authenticate, requireRole('field_team'), JobController.raiseConcern);
+router.get('/concerns', authenticate, requireRole('admin'), JobController.getConcerns);
+router.patch('/:id/resolve-concern', authenticate, requireRole('admin'), JobController.resolveConcern);
+
 // Shared (customer, field team, admin)
 router.get('/:id', authenticate, JobController.getJob);
 

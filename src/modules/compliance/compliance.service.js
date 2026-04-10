@@ -194,11 +194,12 @@ const ComplianceService = {
       };
     }
 
-    // Update job status to completed
-    await JobRepository.updateStatus(jobId, 'completed');
+    // Do NOT complete the job here — job stays in_progress until customer
+    // provides their end OTP (satisfied or unsatisfied). The frontend will
+    // call generateEndOtp → navigate to OtpEntry → verifyEndOtp → completeJob.
 
     return {
-      message: 'All 8 compliance steps verified. Job completed successfully.',
+      message: 'All 8 compliance steps verified. Generate end OTP to finalise the job.',
       job_id: jobId,
       ready_for_certificate: true,
     };

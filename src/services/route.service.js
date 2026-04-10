@@ -1,7 +1,11 @@
 /**
  * Route Optimization Service
- * Uses Google Distance Matrix API to sort jobs by travel efficiency.
- * Falls back to Haversine nearest-neighbor if API key is missing.
+ *
+ * Priority:  1. Appointment time (scheduled_at) — always respected
+ *            2. Distance — used ONLY to reorder jobs within the same time slot
+ *
+ * Why: a 4 PM job 1 km away must never jump ahead of a 10 AM job 5 km away.
+ * Distance Matrix / Haversine is used to add travel context and to sort ties.
  */
 const axios = require('axios');
 
@@ -18,8 +22,34 @@ const haversine = (lat1, lng1, lat2, lng2) => {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
-// Nearest-neighbor TSP heuristic — O(n²), fine for ≤20 jobs
-const nearestNeighbor = (jobs, startLat, startLng) => {
+// Group jobs that fall within `windowMins` of each other into slots
+// e.g. 10:00 and 10:20 → same slot if windowMins=30
+const groupByTimeSlot = (jobs, windowMins = 30) => {
+  const sorted = [...jobs].sort(
+    (a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()
+  );
+
+  const groups = [];
+  let current = [sorted[0]];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = new Date(sorted[i - 1].scheduled_at).getTime();
+    const curr = new Date(sorted[i].scheduled_at).getTime();
+    const diffMins = (curr - prev) / 60000;
+    if (diffMins <= windowMins) {
+      current.push(sorted[i]);
+    } else {
+      groups.push(current);
+      current = [sorted[i]];
+    }
+  }
+  groups.push(current);
+  return groups;
+};
+
+// Within a group of same-slot jobs, pick nearest-neighbor order from a start point
+const nearestNeighborGroup = (jobs, startLat, startLng) => {
+  if (jobs.length <= 1) return jobs;
   const unvisited = [...jobs];
   const route = [];
   let curLat = startLat;
@@ -42,19 +72,12 @@ const nearestNeighbor = (jobs, startLat, startLng) => {
   return route;
 };
 
-// Build optimized route using Distance Matrix API
-const optimizeWithGoogleMaps = async (jobs, originLat, originLng) => {
-  const destinations = jobs
-    .map((j) => `${j.location_lat},${j.location_lng}`)
-    .join('|');
-  const origin = `${originLat},${originLng}`;
-
-  const url = `https://maps.googleapis.com/maps/api/distancematrix/json`;
-
-  // Get distance from current origin to all job locations
-  const { data } = await axios.get(url, {
+// Annotate jobs with Google distance/duration from a single origin
+const annotateWithGoogleDistance = async (jobs, originLat, originLng) => {
+  const destinations = jobs.map((j) => `${j.location_lat},${j.location_lng}`).join('|');
+  const { data } = await axios.get('https://maps.googleapis.com/maps/api/distancematrix/json', {
     params: {
-      origins: origin,
+      origins: `${originLat},${originLng}`,
       destinations,
       mode: 'driving',
       key: MAPS_KEY,
@@ -64,9 +87,8 @@ const optimizeWithGoogleMaps = async (jobs, originLat, originLng) => {
 
   if (data.status !== 'OK') throw new Error(`Maps API: ${data.status}`);
 
-  // Sort jobs by distance from origin (greedy first leg)
   const elements = data.rows[0].elements;
-  const withDist = jobs.map((j, i) => ({
+  return jobs.map((j, i) => ({
     ...j,
     distance_km: elements[i]?.status === 'OK'
       ? Math.round(elements[i].distance.value / 100) / 10
@@ -75,19 +97,14 @@ const optimizeWithGoogleMaps = async (jobs, originLat, originLng) => {
       ? Math.round(elements[i].duration.value / 60)
       : null,
   }));
-
-  // Sort by distance ascending
-  withDist.sort((a, b) => (a.distance_km ?? 999) - (b.distance_km ?? 999));
-  return withDist;
 };
 
 const RouteService = {
   /**
-   * Given a list of jobs and technician's current location,
-   * returns jobs sorted in optimized travel order.
+   * Returns jobs sorted by appointment time first.
+   * Within the same time slot (±30 min), orders by travel distance.
    */
   optimizeRoute: async (jobs, originLat, originLng) => {
-    // Filter jobs that have GPS coordinates
     const withCoords = jobs.filter(
       (j) => j.location_lat && j.location_lng &&
              parseFloat(j.location_lat) !== 0 && parseFloat(j.location_lng) !== 0
@@ -97,36 +114,74 @@ const RouteService = {
              parseFloat(j.location_lat) === 0 || parseFloat(j.location_lng) === 0
     );
 
+    // No GPS on jobs — just sort by time
     if (withCoords.length === 0) {
-      return { optimized: jobs, method: 'none', reason: 'No GPS coordinates on jobs' };
-    }
-
-    let optimized;
-    let method;
-
-    if (MAPS_KEY && originLat && originLng) {
-      try {
-        optimized = await optimizeWithGoogleMaps(withCoords, originLat, originLng);
-        method = 'google_distance_matrix';
-      } catch (err) {
-        console.warn('⚠️ Google Maps fallback to Haversine:', err.message);
-        optimized = nearestNeighbor(withCoords, originLat, originLng);
-        method = 'haversine_fallback';
-      }
-    } else if (originLat && originLng) {
-      optimized = nearestNeighbor(withCoords, originLat, originLng);
-      method = 'haversine';
-    } else {
-      // No origin — sort by scheduled_at
-      optimized = [...withCoords].sort(
+      const chronological = [...jobs].sort(
         (a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()
       );
-      method = 'chronological';
+      return { optimized: chronological, method: 'chronological', reason: 'No GPS coordinates on jobs' };
     }
 
-    // Jobs without coords go at the end
+    // Step 1: annotate jobs with distance info (best effort)
+    let annotated = withCoords;
+    let method = 'time_first';
+
+    if (originLat && originLng) {
+      if (MAPS_KEY) {
+        try {
+          annotated = await annotateWithGoogleDistance(withCoords, originLat, originLng);
+          method = 'time_first+google_distance';
+        } catch (err) {
+          console.warn('⚠️ Google Maps fallback to Haversine:', err.message);
+          // Annotate with haversine distance
+          annotated = withCoords.map((j) => ({
+            ...j,
+            distance_km: Math.round(
+              haversine(originLat, originLng, parseFloat(j.location_lat), parseFloat(j.location_lng)) * 10
+            ) / 10,
+          }));
+          method = 'time_first+haversine';
+        }
+      } else {
+        // No API key — haversine annotation only
+        annotated = withCoords.map((j) => ({
+          ...j,
+          distance_km: Math.round(
+            haversine(originLat, originLng, parseFloat(j.location_lat), parseFloat(j.location_lng)) * 10
+          ) / 10,
+        }));
+        method = 'time_first+haversine';
+      }
+    }
+
+    // Step 2: group by time slot (±30 min window)
+    const groups = groupByTimeSlot(annotated, 30);
+
+    // Step 3: within each slot group, optimize by distance
+    let curLat = originLat || 0;
+    let curLng = originLng || 0;
+    const optimized = [];
+
+    for (const group of groups) {
+      const ordered = (originLat && originLng)
+        ? nearestNeighborGroup(group, curLat, curLng)
+        : group;
+
+      optimized.push(...ordered);
+
+      // Update current position to last job in this group
+      const last = ordered[ordered.length - 1];
+      curLat = parseFloat(last.location_lat || curLat);
+      curLng = parseFloat(last.location_lng || curLng);
+    }
+
+    // Jobs without coords go at the end, sorted by time
+    const tail = [...withoutCoords].sort(
+      (a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()
+    );
+
     return {
-      optimized: [...optimized, ...withoutCoords],
+      optimized: [...optimized, ...tail],
       method,
       total_jobs: jobs.length,
       optimized_count: withCoords.length,

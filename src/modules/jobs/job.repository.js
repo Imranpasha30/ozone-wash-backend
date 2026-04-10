@@ -317,6 +317,78 @@ const JobRepository = {
     return parseInt(result.rows[0].count) || 0;
   },
 
+  // ── Conflict Detection ──────────────────────────────────────────────────
+
+  // Returns jobs assigned to teamId that overlap the given scheduledAt (±60 min)
+  checkConflict: async (teamId, scheduledAt, excludeJobId = null) => {
+    let query = `
+      SELECT j.id, j.scheduled_at, j.status,
+        b.tank_type, b.tank_size_litres, b.address,
+        c.name as customer_name, c.phone as customer_phone
+      FROM jobs j
+      LEFT JOIN bookings b ON b.id = j.booking_id
+      LEFT JOIN users c ON c.id = j.customer_id
+      WHERE j.assigned_team_id = $1
+        AND j.status NOT IN ('cancelled', 'completed')
+        AND j.scheduled_at BETWEEN $2::timestamptz - INTERVAL '60 minutes'
+                                AND $2::timestamptz + INTERVAL '60 minutes'
+    `;
+    const params = [teamId, scheduledAt];
+    if (excludeJobId) {
+      query += ` AND j.id != $3`;
+      params.push(excludeJobId);
+    }
+    query += ` ORDER BY j.scheduled_at ASC`;
+    const result = await db.query(query, params);
+    return result.rows;
+  },
+
+  // Field team raises a scheduling concern on their job
+  raiseConcern: async (jobId, teamId, message) => {
+    const result = await db.query(
+      `UPDATE jobs SET
+        concern_message   = $1,
+        concern_raised_at = NOW(),
+        concern_resolved  = false,
+        concern_raised_by = $2,
+        updated_at        = NOW()
+       WHERE id = $3 AND assigned_team_id = $2
+       RETURNING *`,
+      [message, teamId, jobId]
+    );
+    return result.rows[0] || null;
+  },
+
+  // Admin: get all unresolved concerns
+  findConcerns: async () => {
+    const result = await db.query(
+      `SELECT j.id, j.scheduled_at, j.status,
+        j.concern_message, j.concern_raised_at, j.concern_resolved,
+        j.assigned_team_id,
+        t.name as team_name, t.phone as team_phone, t.fcm_token as team_fcm_token,
+        c.name as customer_name, c.phone as customer_phone,
+        b.address, b.tank_type, b.tank_size_litres
+       FROM jobs j
+       JOIN users t ON t.id = j.assigned_team_id
+       JOIN users c ON c.id = j.customer_id
+       LEFT JOIN bookings b ON b.id = j.booking_id
+       WHERE j.concern_message IS NOT NULL
+         AND j.concern_resolved = false
+       ORDER BY j.concern_raised_at DESC`
+    );
+    return result.rows;
+  },
+
+  // Admin resolves a concern (e.g. after reassigning)
+  resolveConcern: async (jobId) => {
+    const result = await db.query(
+      `UPDATE jobs SET concern_resolved = true, updated_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [jobId]
+    );
+    return result.rows[0];
+  },
+
 };
 
 module.exports = JobRepository;
