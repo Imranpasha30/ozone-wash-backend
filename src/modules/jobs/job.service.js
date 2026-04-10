@@ -149,7 +149,7 @@ const JobService = {
     if (!job) throw { status: 404, message: 'Job not found.' };
     if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
     if (job.status !== 'in_progress') throw { status: 400, message: 'Job must be in progress to verify end OTP.' };
-    if (!job.end_otp_satisfied && !job.end_otp) throw { status: 400, message: 'End OTP has not been generated yet.' };
+    if (!job.end_otp_satisfied && !job.end_otp_unsatisfied) throw { status: 400, message: 'End OTP has not been generated yet.' };
 
     // Check which OTP was entered
     let satisfied = null;

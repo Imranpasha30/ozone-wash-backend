@@ -30,7 +30,7 @@ const BookingRepository = {
     const result = await db.query(
       `SELECT b.*, u.name as customer_name, u.phone as customer_phone,
               j.id as job_id, j.status as job_status,
-              j.assigned_team_id, j.start_otp, j.end_otp,
+              j.assigned_team_id, j.start_otp,
               j.start_otp_verified, j.end_otp_verified,
               j.end_otp_satisfied, j.end_otp_unsatisfied, j.customer_satisfied,
               t.name as team_name
@@ -47,7 +47,7 @@ const BookingRepository = {
   findByCustomer: async (customerId) => {
     const result = await db.query(
       `SELECT b.*, j.id as job_id, j.status as job_status,
-              j.assigned_team_id, j.start_otp, j.end_otp,
+              j.assigned_team_id, j.start_otp,
               j.start_otp_verified, j.end_otp_verified,
               j.end_otp_satisfied, j.end_otp_unsatisfied, j.customer_satisfied,
               t.name as team_name

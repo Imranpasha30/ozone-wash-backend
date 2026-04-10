@@ -124,7 +124,7 @@ const JobRepository = {
     const result = await db.query(
       `UPDATE jobs SET
         end_otp_satisfied = $1, end_otp_unsatisfied = $2,
-        end_otp = $1, end_otp_verified = false,
+        end_otp_verified = false,
         customer_satisfied = NULL, updated_at = NOW()
        WHERE id = $3 RETURNING *`,
       [satisfiedOtp, unsatisfiedOtp, jobId]
