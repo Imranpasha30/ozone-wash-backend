@@ -102,6 +102,11 @@ const JobService = {
     if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
     if (job.status !== 'scheduled') throw { status: 400, message: `Cannot generate start OTP for a job with status: ${job.status}` };
 
+    // Reuse existing OTP if already generated and not yet verified — prevents overwrite race condition
+    if (job.start_otp && !job.start_otp_verified) {
+      return { job_id: jobId, otp_sent: true };
+    }
+
     const otp = generateOtp();
     await JobRepository.storeStartOtp(jobId, otp);
     return { job_id: jobId, otp_sent: true };
@@ -167,6 +172,11 @@ const JobService = {
     if (job.customer_id !== customerId) throw { status: 403, message: 'Access denied.' };
     if (!job.assigned_team_id) throw { status: 400, message: 'No technician assigned yet.' };
     if (job.status !== 'scheduled') throw { status: 400, message: `Cannot generate OTP for a job with status: ${job.status}` };
+
+    // Reuse existing OTP if already generated and not yet verified — prevents overwrite race condition
+    if (job.start_otp && !job.start_otp_verified) {
+      return { job_id: jobId, otp: job.start_otp };
+    }
 
     const otp = generateOtp();
     await JobRepository.storeStartOtp(jobId, otp);
