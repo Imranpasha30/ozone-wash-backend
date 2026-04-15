@@ -1,6 +1,6 @@
 const { Pool } = require('pg');
 const dns = require('dns');
-require('dotenv').config();
+require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
 
 // Force IPv4 — Railway does not support IPv6 connections to Supabase
 dns.setDefaultResultOrder('ipv4first');
