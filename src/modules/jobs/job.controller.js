@@ -2,6 +2,8 @@ const { validationResult } = require('express-validator');
 const JobService = require('./job.service');
 const JobRepository = require('./job.repository');
 const NotificationService = require('../../services/notification.service');
+const EcoScoreService = require('../ecoscore/ecoscore.service');
+const IncentiveEngine = require('../incentives/engine');
 const { sendSuccess, sendError } = require('../../utils/response');
 
 const JobController = {
@@ -127,6 +129,27 @@ const JobController = {
   completeJob: async (req, res, next) => {
     try {
       const job = await JobService.completeJob(req.params.id);
+      // EcoScore: refresh customer's rolling score (fire-and-forget — never block)
+      if (job?.customer_id) {
+        EcoScoreService.recalcOnEvent({
+          event: 'job_complete',
+          user_id: job.customer_id,
+          ref: job.id,
+        }).catch(() => {});
+      }
+      // FA Incentives: accrue base + addon + rating (fire-and-forget)
+      if (job?.id) {
+        IncentiveEngine.accrueForJob({ job_id: job.id })
+          .catch(err => console.warn('[incentives.accrue]', err.message));
+      }
+      if (job?.assigned_team_id) {
+        IncentiveEngine.recalcAgentStats({ agent_id: job.assigned_team_id })
+          .catch(err => console.warn('[incentives.recalc]', err.message));
+        IncentiveEngine.evaluateMonthlyTarget({
+          agent_id: job.assigned_team_id,
+          month: IncentiveEngine.firstOfMonth(),
+        }).catch(err => console.warn('[incentives.target]', err.message));
+      }
       return sendSuccess(res, { job }, 'Job completed successfully');
     } catch (err) {
       next(err);

@@ -1,4 +1,4 @@
-require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
+require('dotenv').config({ path: require('path').resolve(__dirname, '../.env.client') });
 
 const express = require('express');
 const cors = require('cors');
@@ -47,25 +47,56 @@ app.use(compression({
 }));
 
 // ── Rate Limiting ─────────────────────────────────────────────────────────────
+// Key by JWT user-id when present (multiple techs on the same office Wi-Fi share an
+// IP otherwise). Falls back to IP for unauthenticated traffic.
+const keyByUserOrIp = (req /*, res */) => {
+  const auth = req.headers['authorization'];
+  if (auth && auth.startsWith('Bearer ')) {
+    // Cheap signature-skip JWT decode (we don't verify here, just bucket by sub).
+    try {
+      const payload = auth.slice(7).split('.')[1];
+      const decoded = JSON.parse(Buffer.from(payload, 'base64').toString());
+      if (decoded?.id || decoded?.sub) return `u:${decoded.id || decoded.sub}`;
+    } catch { /* fall through to IP */ }
+  }
+  return req.ip;
+};
+
+// Generous default — covers a busy field-tech doing an 8-step compliance job
+// (multiple photo uploads + ecoscore + ratings + status calls). Photo uploads
+// have their own multer limit; this is purely API call throttling.
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'production' ? 60 : 1000,
+  windowMs: 60 * 1000,                 // 1 minute window
+  max: process.env.NODE_ENV === 'production' ? 240 : 2000,  // 240/min ≈ 4 req/sec sustained
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: keyByUserOrIp,
   message: { success: false, message: 'Too many requests. Please slow down.' },
-  skip: (req) => req.path === '/api-docs', // Don't rate-limit docs
+  skip: (req) => req.path === '/api-docs' || req.path === '/health',
 });
 app.use('/api', limiter);
 
-// OTP rate limit — max 3 per 5 minutes per IP
+// OTP rate limit — max 5 per 5 minutes per phone (prevents abuse, allows retries)
 const otpLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  max: 3,
+  max: 5,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => req.body?.phone || req.ip,
   message: { success: false, message: 'Too many OTP requests. Please wait 5 minutes.' },
 });
 app.use('/api/v1/auth/send-otp', otpLimiter);
+
+// Photo upload limit — 60 per minute per user (≈ one full job's worth of photos)
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: keyByUserOrIp,
+  message: { success: false, message: 'Too many uploads in a row. Please wait a moment.' },
+});
+app.use('/api/v1/upload', uploadLimiter);
 
 // ── Body Parsing ──────────────────────────────────────────────────────────────
 app.use(express.json({ limit: '2mb' })); // Tighter limit in production
@@ -104,6 +135,7 @@ app.get('/health', (_req, res) => {
 
 // ── API Routes ────────────────────────────────────────────────────────────────
 app.use('/api/v1', routes);
+
 
 // ── Error Handlers ────────────────────────────────────────────────────────────
 app.use(notFound);

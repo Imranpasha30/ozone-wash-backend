@@ -2,6 +2,8 @@ const { validationResult } = require('express-validator');
 const BookingService = require('./booking.service');
 const NotificationService = require('../../services/notification.service');
 const AuthRepository = require('../auth/auth.repository');
+const PricingService = require('../../services/pricing');
+const EcoScoreService = require('../ecoscore/ecoscore.service');
 const { sendSuccess, sendError } = require('../../utils/response');
 
 const BookingController = {
@@ -20,14 +22,48 @@ const BookingController = {
     }
   },
 
-  // GET /api/v1/bookings/price?tank_type=overhead&tank_size_litres=500&addons=lime_treatment
-  // AMC discount is auto-detected from the logged-in user's active contract
+  // GET /api/v1/bookings/price
+  //   ?tank_size_litres=2000&tank_count=1&plan=quarterly             (matrix mode — preferred)
+  //   ?tank_type=overhead&tank_size_litres=500&addons=lime_treatment (legacy add-ons mode)
+  //
+  // When `plan` is provided, returns the authoritative matrix price for the
+  // chosen tier × plan × tank_count. When `plan` is omitted we fall back to
+  // the legacy one-time-with-addons calculator so older clients keep working.
   getPrice: async (req, res, next) => {
     try {
-      const { tank_type, tank_size_litres, addons } = req.query;
-      const addonList = addons ? addons.split(',') : [];
+      const { tank_type, tank_size_litres, addons, plan, tank_count } = req.query;
+      const litres = parseFloat(tank_size_litres) || 0;
 
-      // Auto-detect active AMC for this user
+      // ── New mode: explicit plan from the pricing matrix ───────────────
+      if (plan) {
+        const tier = await PricingService.tierForLitres(litres);
+        if (!tier) {
+          return sendError(res, 'No pricing tier matches that tank size.', 400);
+        }
+        const result = await PricingService.priceForBooking({
+          tier_id: tier.id,
+          plan,
+          tank_count: parseInt(tank_count, 10) || 1,
+        });
+        // Backwards-compat keys + new fields
+        const pricing = {
+          ...result,
+          tier,
+          // Legacy keys so old clients still parse it as a "pricing" object
+          base_price: Math.round(result.total_paise / 100),
+          subtotal: Math.round(result.ex_gst_paise / 100),
+          gst: Math.round(result.gst_paise / 100),
+          grand_total: Math.round(result.total_paise / 100),
+          amount_paise: result.total_paise,
+          addon_total: 0,
+          amc_covered: plan !== 'one_time',
+          amc_plan: plan !== 'one_time' ? plan : null,
+        };
+        return sendSuccess(res, { pricing });
+      }
+
+      // ── Legacy mode: tank_type + addons one-time pricing ──────────────
+      const addonList = addons ? addons.split(',') : [];
       let activePlan = null;
       if (req.user) {
         try {
@@ -40,7 +76,7 @@ const BookingController = {
 
       const pricing = BookingService.calculatePrice(
         tank_type,
-        parseFloat(tank_size_litres) || 500,
+        litres || 500,
         addonList,
         activePlan
       );
@@ -64,6 +100,12 @@ const BookingController = {
           { phone: req.user.phone, name: customer?.name, fcm_token: customer?.fcm_token },
           result.job
         );
+      }).catch(() => {});
+      // EcoScore: refresh customer's rolling score (fire-and-forget — never block)
+      EcoScoreService.recalcOnEvent({
+        event: 'booking_created',
+        user_id: req.user.id,
+        ref: result?.booking?.id,
       }).catch(() => {});
       return sendSuccess(res, result, 'Booking created successfully', 201);
     } catch (err) {

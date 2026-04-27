@@ -5,7 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
+    "predev": "npx -y kill-port 3000",
+    "dev": "nodemon --signal SIGTERM --delay 200ms src/server.js",
     "migrate": "node scripts/migrate.js",
     "migrate:status": "node scripts/migrate.js status"
   },

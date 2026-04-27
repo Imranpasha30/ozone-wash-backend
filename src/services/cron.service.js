@@ -1,6 +1,8 @@
 const cron = require('node-cron');
 const AmcRepository = require('../modules/amc/amc.repository');
 const NotificationService = require('./notification.service');
+const IncentivesCron = require('../cron/incentivesNightly');
+const EcoScoreCron = require('../cron/ecoscoreNightly');
 const db = require('../config/db');
 
 const CronService = {
@@ -21,6 +23,12 @@ const CronService = {
     cron.schedule('*/30 * * * *', async () => {
       await CronService.checkSlaBreaches();
     });
+
+    // Nightly EcoScore engine (02:00 IST) — recompute every customer's score
+    EcoScoreCron.start();
+
+    // Nightly incentive engine (03:00 IST) — recalc stats, freeze month
+    IncentivesCron.start();
 
     console.log('✅ Cron jobs started');
   },

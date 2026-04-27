@@ -73,14 +73,23 @@ const slotsValidation = [
 ];
 
 // Query param validation for GET /bookings/price
+//   Two modes:
+//     (a) matrix:  ?tank_size_litres=2000&tank_count=1&plan=quarterly
+//     (b) legacy:  ?tank_type=overhead&tank_size_litres=500&addons=lime_treatment
 const priceValidation = [
-  query('tank_type')
-    .notEmpty().withMessage('tank_type is required')
-    .isIn(['overhead', 'underground', 'sump']).withMessage('Invalid tank type'),
   query('tank_size_litres')
     .notEmpty().withMessage('tank_size_litres is required')
     .isNumeric().withMessage('Must be a number')
     .custom(val => Number(val) > 0).withMessage('Must be > 0'),
+  query('tank_type')
+    .optional()
+    .isIn(['overhead', 'underground', 'sump']).withMessage('Invalid tank type'),
+  query('plan')
+    .optional()
+    .isIn(['one_time', 'monthly', 'quarterly', 'half_yearly']).withMessage('Invalid plan'),
+  query('tank_count')
+    .optional()
+    .isInt({ min: 1, max: 50 }).withMessage('tank_count must be 1-50'),
   query('addons')
     .optional()
     .isString(),

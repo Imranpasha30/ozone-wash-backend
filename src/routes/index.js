@@ -12,8 +12,13 @@ const uploadRoutes = require('./upload.routes');
 const paymentRoutes = require('../modules/payments/payment.routes');
 const incidentRoutes = require('../modules/incidents/incident.routes');
 const livestreamRoutes = require('../modules/livestream/livestream.routes');
+const misRoutes = require('../modules/mis/mis.routes');
+const adminRoutes = require('../modules/admin/admin.routes');
+const { meRouter: incentiveMeRouter } = require('../modules/incentives/routes');
+const ratingRoutes = require('../modules/ratings/ratings.routes');
 
 router.use('/auth', authRoutes);
+router.use('/incentives', incentiveMeRouter);
 router.use('/bookings', bookingRoutes);
 router.use('/jobs', jobRoutes);
 router.use('/compliance', complianceRoutes);
@@ -24,6 +29,9 @@ router.use('/upload', uploadRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/incidents', incidentRoutes);
 router.use('/livestream', livestreamRoutes);
+router.use('/mis', misRoutes);
+router.use('/admin', adminRoutes);
+router.use('/ratings', ratingRoutes);
 
 
 router.get('/health', (req, res) => {

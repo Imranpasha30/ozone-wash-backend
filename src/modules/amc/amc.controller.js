@@ -1,14 +1,43 @@
 const { validationResult } = require('express-validator');
 const AmcService = require('./amc.service');
+const PricingService = require('../../services/pricing');
+const EcoScoreService = require('../ecoscore/ecoscore.service');
 const { sendSuccess, sendError } = require('../../utils/response');
 
 const AmcController = {
 
   // GET /api/v1/amc/plans
+  // Optional ?tank_size_litres=X&tank_count=N — when supplied, returns the
+  // four matrix plans (one_time, monthly, quarterly, half_yearly) with
+  // computed totals so the customer can compare side by side.
   getPlans: async (req, res, next) => {
     try {
-      const plans = AmcService.getPlanInfo();
-      return sendSuccess(res, { plans });
+      const litres = parseFloat(req.query.tank_size_litres);
+      const count = Math.max(1, parseInt(req.query.tank_count, 10) || 1);
+
+      // Legacy fallback (no tank size given) — return the static plan info
+      if (!litres || !Number.isFinite(litres) || litres <= 0) {
+        const plans = AmcService.getPlanInfo();
+        return sendSuccess(res, { plans });
+      }
+
+      const tier = await PricingService.tierForLitres(litres);
+      if (!tier) {
+        return sendError(res, 'No pricing tier matches that tank size.', 400);
+      }
+
+      const planNames = ['one_time', 'half_yearly', 'quarterly', 'monthly'];
+      const plans = [];
+      for (const plan of planNames) {
+        try {
+          const p = await PricingService.priceForBooking({ tier_id: tier.id, plan, tank_count: count });
+          plans.push(p);
+        } catch (e) {
+          // Skip missing plans rather than failing the whole call
+        }
+      }
+
+      return sendSuccess(res, { tier, tank_count: count, plans });
     } catch (err) {
       next(err);
     }
@@ -22,6 +51,12 @@ const AmcController = {
         return sendError(res, 'Validation failed', 400, errors.array());
       }
       const contract = await AmcService.createContract(req.user.id, req.body);
+      // EcoScore: AMC plan is the strongest single signal — refresh now
+      EcoScoreService.recalcOnEvent({
+        event: 'amc_renewal',
+        user_id: req.user.id,
+        ref: contract?.id,
+      }).catch(() => {});
       return sendSuccess(res, { contract }, 'AMC contract created successfully', 201);
     } catch (err) {
       next(err);
@@ -110,6 +145,12 @@ const AmcController = {
         req.user.id,
         req.user.role
       );
+      // EcoScore: AMC renewal — refresh score (renewal preserves loyalty)
+      EcoScoreService.recalcOnEvent({
+        event: 'amc_renewal',
+        user_id: contract?.customer_id || req.user.id,
+        ref: contract?.id,
+      }).catch(() => {});
       return sendSuccess(res, { contract }, 'Contract renewed successfully');
     } catch (err) {
       next(err);
