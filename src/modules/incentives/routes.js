@@ -3,6 +3,7 @@
  *
  * Field-team:
  *   GET  /api/v1/incentives/me
+ *   GET  /api/v1/incentives/me/credits     (Phase B credit engine)
  *   GET  /api/v1/incentives/me/history
  *
  * Admin:
@@ -12,6 +13,7 @@
  *   POST /api/v1/admin/incentives/payouts/:batchId/reverse
  *   GET  /api/v1/admin/incentives/rules
  *   PUT  /api/v1/admin/incentives/rules
+ *   GET  /api/v1/admin/incentives/credits/:month   (Phase B credit engine)
  */
 
 const express = require('express');
@@ -23,6 +25,7 @@ const adminRouter = express.Router();
 
 /* Field-team self */
 meRouter.get('/me',         authenticate, requireRole('field_team'), ctrl.getMyLedger);
+meRouter.get('/me/credits', authenticate, requireRole('field_team'), ctrl.getMyCredits);
 meRouter.get('/me/history', authenticate, requireRole('field_team'), ctrl.getMyHistory);
 
 /* Admin */
@@ -32,5 +35,6 @@ adminRouter.post('/payouts/:batchId/mark-paid',     authenticate, requireRole('a
 adminRouter.post('/payouts/:batchId/reverse',       authenticate, requireRole('admin'), ctrl.adminReverseBatch);
 adminRouter.get('/rules',                           authenticate, requireRole('admin'), ctrl.adminGetRules);
 adminRouter.put('/rules',                           authenticate, requireRole('admin'), ctrl.adminUpdateRules);
+adminRouter.get('/credits/:month',                  authenticate, requireRole('admin'), ctrl.adminGetCreditsForMonth);
 
 module.exports = { meRouter, adminRouter };

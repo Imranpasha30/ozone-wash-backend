@@ -19,6 +19,7 @@ const cron = require('node-cron');
 const { query } = require('../config/db');
 const engine = require('../modules/incentives/engine');
 const repo = require('../modules/incentives/repository');
+const service = require('../modules/incentives/service');
 
 const log = (m) => console.log(`[incentives.cron] ${m}`);
 const warn = (m, err) => console.warn(`[incentives.cron] ${m}`, err?.message || '');
@@ -72,10 +73,22 @@ async function freezePriorMonth() {
   }
 }
 
+/* ── 4: Phase B credit-engine recalc for every active agent ──────── */
+async function recalcCredits() {
+  try {
+    log('Recalculating monthly credits (Phase B credit engine)…');
+    const result = await service.recalcAllAgents();
+    log(`Credit recalc done: ${result.ok}/${result.processed} ok, ${result.fail} failed.`);
+  } catch (err) {
+    warn('recalcCredits failed', err);
+  }
+}
+
 /* ── Public runner — used by both cron and CLI ───────────────────── */
 async function runNightly() {
   try {
     await recalcAndEvaluate();
+    await recalcCredits();
     await freezePriorMonth();
   } catch (err) {
     warn('runNightly failed', err);
@@ -98,7 +111,7 @@ function start() {
   log('✅ Nightly incentive cron registered (03:00 IST)');
 }
 
-module.exports = { start, runNightly, recalcAndEvaluate, freezePriorMonth };
+module.exports = { start, runNightly, recalcAndEvaluate, recalcCredits, freezePriorMonth };
 
 /* ── CLI entry ───────────────────────────────────────────────────── */
 if (require.main === module) {

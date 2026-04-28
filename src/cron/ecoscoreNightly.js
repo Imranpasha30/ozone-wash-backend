@@ -26,6 +26,18 @@ async function runNightly() {
     const result = await EcoScoreService.recalcAllCustomers({ concurrency: 5 });
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     log(`Done in ${elapsed}s — total=${result.total} ok=${result.ok} fail=${result.fail}`);
+
+    // Phase A: expire EcoPoints older than 24 months. Runs after the
+    // recompute so the wallet reflects fresh credits before stale ones are
+    // pruned. Failure here must NOT mark the cron as failed.
+    try {
+      log('Expiring EcoPoints older than 24 months…');
+      const expiry = await EcoScoreService.expireOldEcoPoints();
+      log(`Expiry done — users=${expiry.users} points_expired=${expiry.expired}`);
+    } catch (e) {
+      warn('expireOldEcoPoints failed', e);
+    }
+
     return result;
   } catch (err) {
     warn('runNightly failed', err);

@@ -236,15 +236,18 @@ const EcoScoreRepository = {
     return rows[0];
   },
 
-  // ─── Wallet bonus on badge upgrade ───────────────────────────────────────
-  ensureWallet: async (userId) => {
-    await db.query(
+  // ─── Wallet helpers ──────────────────────────────────────────────────────
+  ensureWallet: async (userId, client = db) => {
+    await client.query(
       `INSERT INTO wallets (user_id) VALUES ($1)
          ON CONFLICT (user_id) DO NOTHING`,
       [userId]
     );
   },
 
+  // Legacy one-shot badge-upgrade bonus. Kept for back-compat with any
+  // historical callers; the new awardEcoPoints flow uses per-job accrual
+  // and supersedes this function.
   creditBadgeBonus: async ({ user_id, points, ref_id }) => {
     if (!points || points <= 0) return null;
     await EcoScoreRepository.ensureWallet(user_id);
@@ -263,6 +266,61 @@ const EcoScoreRepository = {
       [user_id, points]
     );
     return { credited: points };
+  },
+
+  // ─── EcoPoints (Phase A) ─────────────────────────────────────────────────
+
+  // Get a user's last N completed-job EcoScore snapshots, newest first. Used
+  // to detect consecutive-tier streaks (2nd Platinum / 2nd Gold in a row).
+  getRecentJobBadges: async (customerId, limit = 3) => {
+    const { rows } = await db.query(
+      `SELECT el.job_id, el.eco_score, el.badge_level, el.created_at
+         FROM eco_metrics_log el
+         JOIN jobs j ON j.id = el.job_id
+        WHERE j.customer_id = $1
+        ORDER BY el.created_at DESC
+        LIMIT $2`,
+      [customerId, limit]
+    );
+    return rows;
+  },
+
+  // Sum the user's wallet_transactions older than 24 months that have not yet
+  // been counted by a previous expiry pass. We use a sentinel ref_type=
+  // 'expiry_window' on the debit row to mark which window we have processed,
+  // but a simpler robust approach is to compare against the user's current
+  // balance: only expire what is still in the wallet.
+  // Logic: net_old = SUM(delta) over txs older than cutoff, NOT counting
+  // existing 'expiry' txs. If net_old > current balance, we expire current
+  // balance (we cannot owe negative points). Otherwise expire net_old.
+  computeExpirableBalances: async (cutoffIso) => {
+    const { rows } = await db.query(
+      `WITH old_credits AS (
+         SELECT user_id, SUM(delta) FILTER (WHERE delta > 0) AS old_credits
+           FROM wallet_transactions
+          WHERE created_at < $1
+            AND reason NOT IN ('expiry','cap_truncate')
+          GROUP BY user_id
+       ),
+       already_expired AS (
+         SELECT user_id, COALESCE(SUM(-delta), 0) AS expired
+           FROM wallet_transactions
+          WHERE reason = 'expiry'
+          GROUP BY user_id
+       )
+       SELECT
+         w.user_id,
+         w.eco_points AS current_balance,
+         COALESCE(oc.old_credits, 0)   AS old_credits,
+         COALESCE(ae.expired, 0)       AS already_expired
+       FROM wallets w
+       LEFT JOIN old_credits oc      ON oc.user_id = w.user_id
+       LEFT JOIN already_expired ae  ON ae.user_id = w.user_id
+       WHERE COALESCE(oc.old_credits, 0) > COALESCE(ae.expired, 0)
+         AND w.eco_points > 0`,
+      [cutoffIso]
+    );
+    return rows;
   },
 };
 

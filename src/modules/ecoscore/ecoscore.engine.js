@@ -117,7 +117,10 @@ async function signalAmcPlan(userId) {
   return { value, plan, tank_count: tankCount };
 }
 
-/* ── Signal: Compliance (avg steps_logged / 8 over last 5 jobs) ──────── */
+/* ── Signal: Compliance (avg phases_logged / 9 over last 5 jobs) ──────
+ * 9-phase model per FA Check List PDF: Stage 0 + Steps 1-8. A skipped UV
+ * step (uv_skipped = true) counts as completed for this aggregate.
+ */
 async function signalCompliance(userId) {
   const { rows } = await query(
     `WITH last_jobs AS (
@@ -130,13 +133,13 @@ async function signalCompliance(userId) {
             COALESCE(COUNT(c.id), 0) AS steps_logged
        FROM last_jobs j
        LEFT JOIN compliance_logs c
-         ON c.job_id = j.id AND c.completed = true
+         ON c.job_id = j.id AND (c.completed = true OR c.uv_skipped = true)
       GROUP BY j.id`,
     [userId]
   );
   if (!rows.length) return { value: 0, jobs_considered: 0 };
-  const avg = rows.reduce((s, r) => s + Math.min(8, Number(r.steps_logged) || 0), 0)
-              / (rows.length * 8);
+  const avg = rows.reduce((s, r) => s + Math.min(9, Number(r.steps_logged) || 0), 0)
+              / (rows.length * 9);
   return { value: clamp01(avg), jobs_considered: rows.length };
 }
 
@@ -223,7 +226,12 @@ async function signalRatings(userId) {
   return { value, count: rows.length, avg: round3(avg) };
 }
 
-/* ── Signal: Water tests (pre + post photos in last 5 jobs) ──────────── */
+/* ── Signal: Water tests (pre + post readings in last 5 jobs) ─────────
+ * PDF-aligned: a "water test" now means actual bucket readings recorded in
+ * compliance_logs.{turbidity,ph_level,orp,conductivity,tds,atp} for both
+ * step 1 (Pre-Check) and step 8 (After-Wash). Falls back to photo presence
+ * + legacy microbial_test_url for old rows that predate migration 009.
+ */
 async function signalWaterTests(userId) {
   const { rows } = await query(
     `WITH last_jobs AS (
@@ -233,16 +241,20 @@ async function signalWaterTests(userId) {
         LIMIT 5
      )
      SELECT lj.id,
-            -- step 1 (pre) photo present
+            -- New schema: step 1 has any of the 6 water-test buckets recorded
             BOOL_OR(c.step_number = 1
-                    AND (c.photo_before_url IS NOT NULL
-                         OR c.photo_after_url IS NOT NULL)) AS has_pre,
-            -- step 8 (post) photo present
+                    AND (c.turbidity IS NOT NULL OR c.ph_level IS NOT NULL
+                         OR c.orp IS NOT NULL OR c.conductivity IS NOT NULL
+                         OR c.tds IS NOT NULL OR c.atp IS NOT NULL))     AS has_pre_buckets,
             BOOL_OR(c.step_number = 8
-                    AND (c.photo_before_url IS NOT NULL
-                         OR c.photo_after_url IS NOT NULL)) AS has_post,
-            -- explicit microbial test url
-            BOOL_OR(c.microbial_test_url IS NOT NULL) AS has_lab
+                    AND (c.turbidity IS NOT NULL OR c.ph_level IS NOT NULL
+                         OR c.orp IS NOT NULL OR c.conductivity IS NOT NULL
+                         OR c.tds IS NOT NULL OR c.atp IS NOT NULL))     AS has_post_buckets,
+            -- Legacy: photo-only signal (old rows)
+            BOOL_OR(c.step_number = 1 AND c.photo_before_url IS NOT NULL) AS has_pre_photo,
+            BOOL_OR(c.step_number = 8 AND c.photo_after_url IS NOT NULL)  AS has_post_photo,
+            -- Legacy: explicit microbial lab test
+            BOOL_OR(c.microbial_test_url IS NOT NULL)                     AS has_lab
        FROM last_jobs lj
        LEFT JOIN compliance_logs c ON c.job_id = lj.id
       GROUP BY lj.id`,
@@ -253,7 +265,9 @@ async function signalWaterTests(userId) {
 
   let qualified = 0;
   for (const r of rows) {
-    if ((r.has_pre && r.has_post) || r.has_lab) qualified += 1;
+    const newSchema = r.has_pre_buckets && r.has_post_buckets;
+    const legacy    = (r.has_pre_photo && r.has_post_photo) || r.has_lab;
+    if (newSchema || legacy) qualified += 1;
   }
   return { value: clamp01(qualified / rows.length), jobs_considered: rows.length };
 }

@@ -235,6 +235,96 @@ const repo = {
     }
   },
 
+  /* ── Credit engine (Phase B / migration 011) ─────────────────── */
+
+  /* UPSERT the latest credit recalculation into agent_stats AND insert a
+     row in agent_credit_log for audit. The `month` is the first-of-month
+     date the credits were computed against. */
+  async saveAgentCreditSnapshot({ agent_id, month, credits_total, breakdown, tier }) {
+    if (!agent_id) return null;
+    const client = await getClient();
+    try {
+      await client.query('BEGIN');
+
+      // Make sure an agent_stats row exists, then patch the credit fields.
+      // We don't touch the existing turnover/jobs/avg_rating columns — the
+      // legacy recalcAgentStats engine path keeps owning those.
+      await client.query(
+        `INSERT INTO agent_stats (agent_id, current_tier, credits_current_month,
+                                  credits_breakdown, last_credit_recalc_at)
+              VALUES ($1, $2, $3, $4::jsonb, now())
+         ON CONFLICT (agent_id) DO UPDATE SET
+           current_tier            = EXCLUDED.current_tier,
+           credits_current_month   = EXCLUDED.credits_current_month,
+           credits_breakdown       = EXCLUDED.credits_breakdown,
+           last_credit_recalc_at   = now()`,
+        [agent_id, tier, credits_total, JSON.stringify(breakdown || {})]
+      );
+
+      const { rows } = await client.query(
+        `INSERT INTO agent_credit_log
+           (agent_id, month, credits_total, credits_breakdown, tier)
+         VALUES ($1, $2::date, $3, $4::jsonb, $5)
+         RETURNING *`,
+        [agent_id, month, credits_total, JSON.stringify(breakdown || {}), tier]
+      );
+
+      await client.query('COMMIT');
+      return rows[0];
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  },
+
+  /* Returns the latest credits + breakdown + tier for one agent (from
+     agent_stats — the live "current" view). Falls back to a zero
+     snapshot if the agent has never been recalculated. */
+  async getAgentCredits(agent_id) {
+    const { rows } = await query(
+      `SELECT agent_id, current_tier, credits_current_month, credits_breakdown,
+              avg_job_minutes_30d, tat_compliance_pct_30d, avg_eco_score_30d,
+              escalation_count_30d, last_credit_recalc_at
+         FROM agent_stats
+        WHERE agent_id = $1`,
+      [agent_id]
+    );
+    if (!rows[0]) {
+      return {
+        agent_id,
+        current_tier: 'unrated',
+        credits_current_month: 0,
+        credits_breakdown: {},
+        avg_job_minutes_30d: 0,
+        tat_compliance_pct_30d: 0,
+        avg_eco_score_30d: 0,
+        escalation_count_30d: 0,
+        last_credit_recalc_at: null,
+      };
+    }
+    return rows[0];
+  },
+
+  /* Admin-side "all-agents-for-this-month" view, sourced from the
+     audit log (agent_credit_log) so we get exactly what was computed
+     for that month — even if agent_stats has since rolled forward. */
+  async getAllAgentCreditsForMonth(monthDate) {
+    const { rows } = await query(
+      `SELECT DISTINCT ON (acl.agent_id)
+              acl.agent_id, acl.month, acl.credits_total,
+              acl.credits_breakdown, acl.tier, acl.computed_at,
+              u.name AS agent_name, u.phone AS agent_phone
+         FROM agent_credit_log acl
+         LEFT JOIN users u ON u.id = acl.agent_id
+        WHERE acl.month = $1::date
+        ORDER BY acl.agent_id, acl.computed_at DESC`,
+      [monthDate]
+    );
+    return rows;
+  },
+
   /* ── Rules ──────────────────────────────────────────────────── */
 
   async getRules() {
@@ -251,6 +341,15 @@ const repo = {
       'monthly_target_jobs','monthly_target_bonus_paise',
       'streak_bonus_paise','streak_threshold_months',
       'tier_platinum_paise','tier_gold_paise','tier_silver_paise',
+      // Credit-engine (Phase B / migration 011)
+      'weight_turnover','weight_avg_time','weight_tat','weight_transactions',
+      'weight_checklist','weight_ecoscore','weight_feedback','weight_addon',
+      'weight_escalation',
+      'benchmark_job_minutes',
+      'tier_credits_platinum','tier_credits_gold',
+      'tier_credits_silver','tier_credits_bronze',
+      'cash_bonus_pct_platinum','cash_bonus_pct_gold','cash_bonus_pct_silver',
+      'leave_days_platinum','leave_days_gold',
     ];
     const sets = [];
     const params = [];

@@ -7,6 +7,7 @@
 const { sendSuccess, sendError } = require('../../utils/response');
 const repo = require('./repository');
 const engine = require('./engine');
+const service = require('./service');
 
 /* ── helpers ─────────────────────────────────────────────────────── */
 const monthFromQuery = (q) => {
@@ -70,6 +71,51 @@ exports.getMyLedger = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// GET /api/v1/incentives/me/credits
+// Returns the agent's current monthly credits + breakdown + tier for the
+// FA Incentive screen (Phase B). Live-recalculates if the saved snapshot
+// is stale (> 6h old) or missing, so the FA always sees fresh numbers.
+exports.getMyCredits = async (req, res, next) => {
+  try {
+    const agent_id = req.user.id;
+    const STALE_MS = 6 * 60 * 60 * 1000; // 6h
+    const snap = await repo.getAgentCredits(agent_id);
+    const stale = !snap.last_credit_recalc_at
+      || (Date.now() - new Date(snap.last_credit_recalc_at).getTime()) > STALE_MS;
+
+    let credits;
+    if (stale) {
+      credits = await service.recalcAgentCredits(agent_id);
+    } else {
+      // Recompute on-the-fly raw metrics so the screen has the per-parameter
+      // detail panel even when we serve from cache.
+      credits = await engine.computeAgentCredits({
+        agent_id, month_start: engine.firstOfMonth(),
+      });
+      credits.month = engine.firstOfMonth();
+    }
+
+    return sendSuccess(res, {
+      agent_id,
+      month: credits.month || engine.firstOfMonth(),
+      tier: credits.tier,
+      credits_total: credits.total,
+      credits_breakdown: credits.breakdown,
+      raw_metrics: credits.raw,
+      thresholds: {
+        platinum: 800, gold: 600, silver: 400, bronze: 200,
+      },
+      benefits: {
+        platinum: { cash_bonus_pct: 0.15, leave_days: 2, badge: 'Star Performer' },
+        gold:     { cash_bonus_pct: 0.10, leave_days: 1, badge: 'Gold Recognition' },
+        silver:   { cash_bonus_pct: 0.05, leave_days: 0, badge: 'Performance Certificate' },
+        bronze:   { cash_bonus_pct: 0,    leave_days: 0, badge: null },
+        unrated:  { cash_bonus_pct: 0,    leave_days: 0, badge: null, flag: 'review' },
+      },
+    });
+  } catch (err) { next(err); }
+};
+
 // GET /api/v1/incentives/me/history?limit=&offset=
 exports.getMyHistory = async (req, res, next) => {
   try {
@@ -103,8 +149,33 @@ exports.adminListPayouts = async (req, res, next) => {
 // POST /api/v1/admin/incentives/payouts/:batchId/freeze
 exports.adminFreezeBatch = async (req, res, next) => {
   try {
+    // Apply tier-driven cash bonus + leave days BEFORE freezing so the
+    // bonus row is captured in the freeze sweep.
+    let tierApplied = null;
+    try {
+      tierApplied = await service.applyTierBonusToBatch(req.params.batchId);
+    } catch (err) {
+      // Don't block the freeze on tier-bonus failures; log and continue.
+      console.warn('[incentives] applyTierBonusToBatch failed:', err?.message || err);
+    }
     const batch = await repo.freezeBatch(req.params.batchId);
-    return sendSuccess(res, { batch }, 'Batch frozen.');
+    return sendSuccess(res, { batch, tier_bonus: tierApplied }, 'Batch frozen.');
+  } catch (err) { next(err); }
+};
+
+// GET /api/v1/admin/incentives/credits/:month
+// Admin view: every field-team agent's credit + tier for a given month.
+exports.adminGetCreditsForMonth = async (req, res, next) => {
+  try {
+    const raw = (req.params.month || '').trim();
+    const m = raw.match(/^(\d{4})-(\d{2})/);
+    const month = m ? `${m[1]}-${m[2]}-01` : engine.monthKey();
+    const rows = await repo.getAllAgentCreditsForMonth(month);
+    const counts = rows.reduce((acc, r) => {
+      acc[r.tier] = (acc[r.tier] || 0) + 1;
+      return acc;
+    }, {});
+    return sendSuccess(res, { month, agents: rows, tier_counts: counts });
   } catch (err) { next(err); }
 };
 

@@ -16,6 +16,7 @@ const misRoutes = require('../modules/mis/mis.routes');
 const adminRoutes = require('../modules/admin/admin.routes');
 const { meRouter: incentiveMeRouter } = require('../modules/incentives/routes');
 const ratingRoutes = require('../modules/ratings/ratings.routes');
+const rewardRoutes = require('../modules/rewards/rewards.routes');
 
 router.use('/auth', authRoutes);
 router.use('/incentives', incentiveMeRouter);
@@ -32,6 +33,7 @@ router.use('/livestream', livestreamRoutes);
 router.use('/mis', misRoutes);
 router.use('/admin', adminRoutes);
 router.use('/ratings', ratingRoutes);
+router.use('/rewards', rewardRoutes);
 
 
 router.get('/health', (req, res) => {

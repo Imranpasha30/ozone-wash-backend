@@ -443,6 +443,214 @@ async function evaluateMonthlyTarget({ agent_id, month }) {
   });
 }
 
+/* ──────────────────────────────────────────────────────────────────
+   computeAgentCredits
+   Phase B credit-based engine (per FA Incentive PDF). Pulls last-30-days
+   data for one agent across 9 weighted parameters, normalises each to
+   0..1, multiplies by its weight × 1000, sums to a credit total, and
+   resolves the tier.
+
+   Returns:
+     { total, breakdown, tier, raw }
+     - total:      integer, sum across all parameters (max ≈ 1000 if
+                   weights sum to 1.00 and every parameter is at 1.0)
+     - breakdown:  { turnover, avg_time, tat, transactions, checklist,
+                     ecoscore, feedback, addon, escalation }   (ints)
+     - tier:       'platinum'|'gold'|'silver'|'bronze'|'unrated'
+     - raw:        underlying metrics (turnover_paise_net, job_count,
+                   avg_minutes, tat_pct, checklist_pct, eco_avg,
+                   rating_avg, addon_pct, escalation_count) — useful
+                   for the FA Incentive screen breakdown.
+   ──────────────────────────────────────────────────────────────── */
+
+// GST is 18% for all priced services (see migration 006).
+const GST_DIVISOR = 1.18;
+
+// Turnover scale: ₹50,000 net → full 1.0 (matches the original platinum-paise
+// threshold, and gives a reasonable spread for the credit normalisation).
+const TURNOVER_SCALE_PAISE = 5000000;
+
+// Volume scale: 30 jobs → full 1.0.
+const TRANSACTIONS_SCALE = 30;
+
+function clamp01(x) {
+  if (!Number.isFinite(x) || x <= 0) return 0;
+  if (x >= 1) return 1;
+  return x;
+}
+
+function tierFromCredits(rules, total) {
+  const t = Number(total || 0);
+  if (t >= Number(rules.tier_credits_platinum || 800)) return 'platinum';
+  if (t >= Number(rules.tier_credits_gold     || 600)) return 'gold';
+  if (t >= Number(rules.tier_credits_silver   || 400)) return 'silver';
+  if (t >= Number(rules.tier_credits_bronze   || 200)) return 'bronze';
+  return 'unrated';
+}
+
+async function computeAgentCredits({ agent_id, month_start }) {
+  if (!agent_id) {
+    return {
+      total: 0, breakdown: {}, tier: 'unrated', raw: {},
+    };
+  }
+  const rules = await loadRules();
+
+  // 1. Job-level aggregate (turnover, count, avg minutes, TAT compliance).
+  const { rows: jobAgg } = await query(
+    `SELECT
+       COUNT(*) FILTER (WHERE j.status='completed' AND j.completed_at >= now() - INTERVAL '30 days') AS job_count,
+       COALESCE(SUM(b.amount_paise) FILTER (
+         WHERE j.status='completed' AND j.completed_at >= now() - INTERVAL '30 days'
+       ), 0)::bigint AS turnover_paise_gross,
+       COALESCE(AVG(EXTRACT(EPOCH FROM (j.completed_at - COALESCE(j.started_at, j.scheduled_at)))/60.0)
+         FILTER (
+           WHERE j.status='completed'
+             AND j.completed_at >= now() - INTERVAL '30 days'
+             AND j.completed_at IS NOT NULL
+             AND COALESCE(j.started_at, j.scheduled_at) IS NOT NULL
+             AND j.completed_at > COALESCE(j.started_at, j.scheduled_at)
+         ), 0)::numeric AS avg_minutes,
+       COUNT(*) FILTER (
+         WHERE j.status='completed'
+           AND j.completed_at >= now() - INTERVAL '30 days'
+           AND j.completed_at <= j.scheduled_at + INTERVAL '60 minutes'
+           AND j.completed_at >= j.scheduled_at - INTERVAL '60 minutes'
+       ) AS tat_ontime_count,
+       COUNT(*) FILTER (
+         WHERE j.status='completed'
+           AND j.completed_at >= now() - INTERVAL '30 days'
+           AND b.addons IS NOT NULL
+           AND jsonb_typeof(b.addons) = 'array'
+           AND jsonb_array_length(b.addons) > 0
+       ) AS addon_jobs
+     FROM jobs j
+     LEFT JOIN bookings b ON b.id = j.booking_id
+     WHERE j.assigned_team_id = $1`,
+    [agent_id]
+  );
+  const ja = jobAgg[0] || {};
+  const job_count = parseInt(ja.job_count || '0', 10);
+  const turnover_gross = Number(ja.turnover_paise_gross || 0);
+  const turnover_net = Math.round(turnover_gross / GST_DIVISOR);
+  const avg_minutes = Number(ja.avg_minutes || 0);
+  const tat_ontime = parseInt(ja.tat_ontime_count || '0', 10);
+  const addon_jobs = parseInt(ja.addon_jobs || '0', 10);
+
+  // 2. 8-step (now 9 phases — step_number 0..8, see migration 009)
+  //    checklist completion rate. We average per-job phases-logged divided
+  //    by 9 across all of the agent's last-30-days completed jobs.
+  const { rows: checklistAgg } = await query(
+    `SELECT COALESCE(AVG(phase_count), 0)::numeric AS avg_phases
+       FROM (
+         SELECT j.id, COUNT(DISTINCT cl.step_number) AS phase_count
+           FROM jobs j
+           LEFT JOIN compliance_logs cl
+             ON cl.job_id = j.id AND cl.completed = true
+          WHERE j.assigned_team_id = $1
+            AND j.status = 'completed'
+            AND j.completed_at >= now() - INTERVAL '30 days'
+          GROUP BY j.id
+       ) t`,
+    [agent_id]
+  );
+  const avg_phases = Number(checklistAgg[0]?.avg_phases || 0);
+  const checklist_pct = avg_phases / 9; // PDF defines 9 phases
+
+  // 3. EcoScore average (0..100).
+  const { rows: ecoAgg } = await query(
+    `SELECT COALESCE(AVG(em.eco_score), 0)::numeric AS avg_eco
+       FROM eco_metrics_log em
+       JOIN jobs j ON j.id = em.job_id
+      WHERE j.assigned_team_id = $1
+        AND j.status = 'completed'
+        AND j.completed_at >= now() - INTERVAL '30 days'`,
+    [agent_id]
+  );
+  const eco_avg = Number(ecoAgg[0]?.avg_eco || 0);
+
+  // 4. Customer rating average (1..5).
+  const { rows: ratingAgg } = await query(
+    `SELECT COALESCE(AVG(r.rating), 0)::numeric AS avg_rating
+       FROM ratings r
+       JOIN jobs j ON j.id = r.job_id
+      WHERE j.assigned_team_id = $1
+        AND r.created_at >= now() - INTERVAL '30 days'`,
+    [agent_id]
+  );
+  const rating_avg = Number(ratingAgg[0]?.avg_rating || 0);
+
+  // 5. Escalation count — incident_reports with severity high/critical
+  //    OR status='escalated' raised against the agent's jobs in window.
+  const { rows: escAgg } = await query(
+    `SELECT COUNT(*)::int AS cnt
+       FROM incident_reports ir
+       JOIN jobs j ON j.id = ir.job_id
+      WHERE j.assigned_team_id = $1
+        AND ir.created_at >= now() - INTERVAL '30 days'
+        AND (ir.status = 'escalated' OR ir.severity IN ('high','critical'))`,
+    [agent_id]
+  );
+  const escalation_count = parseInt(escAgg[0]?.cnt || '0', 10);
+
+  // ── Normalise each metric to 0..1 ────────────────────────────────────
+  const n_turnover     = clamp01(turnover_net / TURNOVER_SCALE_PAISE);
+  // avg-time: < benchmark → full credit; linearly falls to 0 at 2× benchmark.
+  const benchmark = Number(rules.benchmark_job_minutes || 60);
+  let n_avg_time = 0;
+  if (avg_minutes <= 0) {
+    n_avg_time = 0; // no data → no credit
+  } else if (avg_minutes <= benchmark) {
+    n_avg_time = 1;
+  } else {
+    n_avg_time = clamp01(1 - ((avg_minutes - benchmark) / benchmark));
+  }
+  const n_tat          = job_count > 0 ? clamp01(tat_ontime / job_count) : 0;
+  const n_transactions = clamp01(job_count / TRANSACTIONS_SCALE);
+  const n_checklist    = clamp01(checklist_pct);
+  const n_ecoscore     = clamp01(eco_avg / 100);
+  // Feedback: only 4-5 star avg counts. Map [3..5] → [0..1].
+  const n_feedback     = clamp01((rating_avg - 3) / 2);
+  const n_addon        = job_count > 0 ? clamp01(addon_jobs / job_count) : 0;
+  // Zero escalation: full if 0, fall to 0 at 5+ escalations.
+  const n_escalation   = clamp01(1 - (escalation_count / 5));
+
+  // ── Credits per parameter (each 0..weight × 1000) ────────────────────
+  const w = (k, def) => Number(rules[k] ?? def);
+  const c = (norm, weight) => Math.round(norm * weight * 1000);
+
+  const breakdown = {
+    turnover:     c(n_turnover,     w('weight_turnover',     0.25)),
+    avg_time:     c(n_avg_time,     w('weight_avg_time',     0.10)),
+    tat:          c(n_tat,          w('weight_tat',          0.15)),
+    transactions: c(n_transactions, w('weight_transactions', 0.10)),
+    checklist:    c(n_checklist,    w('weight_checklist',    0.10)),
+    ecoscore:     c(n_ecoscore,     w('weight_ecoscore',     0.15)),
+    feedback:     c(n_feedback,     w('weight_feedback',     0.10)),
+    addon:        c(n_addon,        w('weight_addon',        0.05)),
+    escalation:   c(n_escalation,   w('weight_escalation',   0.05)),
+  };
+  const total = Object.values(breakdown).reduce((s, v) => s + v, 0);
+
+  return {
+    total,
+    breakdown,
+    tier: tierFromCredits(rules, total),
+    raw: {
+      job_count,
+      turnover_paise_gross: turnover_gross,
+      turnover_paise_net:   turnover_net,
+      avg_minutes:          Number(avg_minutes.toFixed(2)),
+      tat_compliance_pct:   job_count > 0 ? +(tat_ontime / job_count).toFixed(3) : 0,
+      checklist_pct:        +n_checklist.toFixed(3),
+      avg_eco_score:        +eco_avg.toFixed(2),
+      avg_rating:           +rating_avg.toFixed(2),
+      addon_conversion_pct: job_count > 0 ? +(addon_jobs / job_count).toFixed(3) : 0,
+      escalation_count,
+    },
+  };
+}
+
 module.exports = {
   // public
   accrueForJob,
@@ -450,9 +658,11 @@ module.exports = {
   recalcAgentStats,
   evaluateMonthlyTarget,
   ensureBatchForAgentMonth,
+  computeAgentCredits,
   // helpers (exported for tests / cron)
   firstOfMonth,
   monthKey,
   loadRules,
   tierFromTurnover,
+  tierFromCredits,
 };
