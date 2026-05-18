@@ -6,6 +6,17 @@ const NotificationService = require('../../services/notification.service');
 const AuthService = {
 
   sendOtp: async (phone) => {
+    // Reviewer bypass — for Google Play Console reviewer login only.
+    // When REVIEWER_PHONE + REVIEWER_OTP env vars are set, send-otp for that
+    // phone is a no-op (no DB row, no SMS, no WhatsApp). The static OTP is
+    // accepted by verifyOtp below.
+    const REVIEWER_PHONE = process.env.REVIEWER_PHONE;
+    const REVIEWER_OTP   = process.env.REVIEWER_OTP;
+    if (REVIEWER_PHONE && REVIEWER_OTP && phone === REVIEWER_PHONE) {
+      console.log(`📱 Reviewer bypass: phone=${phone} (OTP=${REVIEWER_OTP})`);
+      return { message: 'OTP sent successfully' };
+    }
+
     // Generate 6-digit OTP
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -30,6 +41,40 @@ const AuthService = {
   },
 
   verifyOtp: async (phone, otpCode, fcmToken = null) => {
+    // Reviewer bypass — see sendOtp comment. Static phone + static OTP combo
+    // skips the OTP table lookup and proceeds to find-or-create + JWT.
+    const REVIEWER_PHONE = process.env.REVIEWER_PHONE;
+    const REVIEWER_OTP   = process.env.REVIEWER_OTP;
+    if (REVIEWER_PHONE && REVIEWER_OTP &&
+        phone === REVIEWER_PHONE && otpCode === REVIEWER_OTP) {
+      let user = await AuthRepository.findByPhone(phone);
+      if (!user) {
+        user = await AuthRepository.createUser({
+          phone,
+          role: 'customer',
+          name: 'Play Reviewer',
+        });
+      }
+      if (fcmToken) {
+        await AuthRepository.updateFcmToken(user.id, fcmToken);
+      }
+      const token = jwt.sign(
+        { id: user.id, phone: user.phone, role: user.role },
+        process.env.JWT_SECRET,
+        { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+      );
+      return {
+        token,
+        user: {
+          id: user.id,
+          phone: user.phone,
+          role: user.role,
+          name: user.name,
+          lang: user.lang,
+        },
+      };
+    }
+
     // Check OTP is valid
     const validOtp = await AuthRepository.findValidOtp(phone, otpCode);
 
