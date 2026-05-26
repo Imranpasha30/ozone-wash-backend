@@ -243,6 +243,11 @@ const JobService = {
     return await JobRepository.findRequests(filters);
   },
 
+  // Get the field team member's own requests (any status).
+  getMyJobRequests: async (teamId) => {
+    return await JobRepository.findRequestsByTeam(teamId);
+  },
+
   // Admin approves a job request (assigns the team)
   approveJobRequest: async (requestId) => {
     const request = await JobRepository.findRequestById(requestId);
@@ -251,14 +256,42 @@ const JobService = {
     if (request.job_status !== 'scheduled') throw { status: 400, message: 'Job is no longer available.' };
     if (request.assigned_team_id) throw { status: 400, message: 'Job is already assigned.' };
 
-    // Assign the team
-    await JobRepository.assignTeam(request.job_id, request.team_id);
+    // Resolve the requester's current team. If they belong to one, the
+    // whole team takes the job (assigned_field_team_id is set so every
+    // member sees it in "My Jobs" and the incentive engine splits the
+    // accruals). The legacy single-agent column also gets set to the
+    // requester so older queries stay valid.
+    const TeamsRepo = require('../teams/teams.repository');
+    const team = await TeamsRepo.findTeamForAgent(request.team_id);
+
+    if (team) {
+      await JobRepository.assignToFieldTeam(request.job_id, team.id, request.team_id);
+    } else {
+      await JobRepository.assignTeam(request.job_id, request.team_id);
+    }
 
     // Approve this request and reject all other pending requests for this job
     await JobRepository.updateRequestStatus(requestId, 'approved');
     await JobRepository.rejectOtherRequests(request.job_id, request.team_id);
 
-    return { job_id: request.job_id, team_id: request.team_id, team_name: request.team_name };
+    // Fire-and-forget: did we just overcommit this technician?
+    try {
+      const job = await JobRepository.findById(request.job_id);
+      const AdminAlertsService = require('../admin-alerts/admin-alerts.service');
+      AdminAlertsService.detectBookingConflicts({
+        jobId: request.job_id,
+        slotTime: job?.scheduled_at,
+        teamId: request.team_id,
+      }).catch((e) => { console.warn('[alerts] approve detect failed:', e?.message); });
+    } catch (_) {}
+
+    return {
+      job_id: request.job_id,
+      team_id: request.team_id,
+      team_name: request.team_name,
+      field_team_id: team?.id || null,
+      field_team_name: team?.name || null,
+    };
   },
 
   // Admin rejects a job request

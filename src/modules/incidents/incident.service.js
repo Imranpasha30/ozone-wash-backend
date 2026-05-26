@@ -7,7 +7,21 @@ const IncidentService = {
     if (data.severity && !validSeverities.includes(data.severity)) {
       throw { status: 400, message: 'Invalid severity. Must be low, medium, high, or critical.' };
     }
-    return await IncidentRepository.create(data);
+    const incident = await IncidentRepository.create(data);
+
+    // Fire-and-forget: surface in admin inbox so the dashboard banner picks it up.
+    try {
+      const AdminAlertsService = require('../admin-alerts/admin-alerts.service');
+      const sev = (data.severity === 'low' ? 'warning' : 'critical');
+      AdminAlertsService.recordIncident({
+        jobId: data.job_id,
+        teamId: data.reported_by || null,
+        summary: data.description || data.title || 'Field team reported an incident.',
+        severity: sev,
+      }).catch((e) => { console.warn('[alerts] incident record failed:', e?.message); });
+    } catch (_) {}
+
+    return incident;
   },
 
   getById: async (id) => {

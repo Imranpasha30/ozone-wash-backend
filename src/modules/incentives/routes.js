@@ -27,6 +27,10 @@ const adminRouter = express.Router();
 meRouter.get('/me',         authenticate, requireRole('field_team'), ctrl.getMyLedger);
 meRouter.get('/me/credits', authenticate, requireRole('field_team'), ctrl.getMyCredits);
 meRouter.get('/me/history', authenticate, requireRole('field_team'), ctrl.getMyHistory);
+meRouter.get('/me/stats',   authenticate, requireRole('field_team'), ctrl.getMyDetailedStats);
+
+/* Admin — view any agent's detailed stats */
+meRouter.get('/agent/:agentId/stats', authenticate, requireRole('admin'), ctrl.getAgentDetailedStats);
 
 /* Admin */
 adminRouter.get('/payouts',                         authenticate, requireRole('admin'), ctrl.adminListPayouts);

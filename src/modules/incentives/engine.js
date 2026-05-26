@@ -97,14 +97,14 @@ async function existingIncentiveForAgentMonth(agent_id, reason, month) {
   return rows[0] || null;
 }
 
-async function insertIncentive({ agent_id, job_id, amount_paise, reason, tier, batch_id }) {
+async function insertIncentive({ agent_id, job_id, amount_paise, reason, tier, batch_id, team_id }) {
   const amt = Math.max(0, Math.round(Number(amount_paise) || 0));
   if (amt <= 0) return null;
   const { rows } = await query(
-    `INSERT INTO incentives (agent_id, job_id, amount_paise, reason, tier, batch_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO incentives (agent_id, job_id, amount_paise, reason, tier, batch_id, team_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id`,
-    [agent_id, job_id || null, amt, reason, tier || null, batch_id || null]
+    [agent_id, job_id || null, amt, reason, tier || null, batch_id || null, team_id || null]
   );
   return rows[0].id;
 }
@@ -132,7 +132,8 @@ async function ensureBatchForAgentMonth({ agent_id, month }) {
 /* ── Job loader ──────────────────────────────────────────────────── */
 async function loadJobWithBooking(job_id) {
   const { rows } = await query(
-    `SELECT j.id, j.assigned_team_id, j.status, j.completed_at, j.scheduled_at,
+    `SELECT j.id, j.assigned_team_id, j.assigned_field_team_id,
+            j.status, j.completed_at, j.scheduled_at,
             b.addons, b.amount_paise
        FROM jobs j
        LEFT JOIN bookings b ON b.id = j.booking_id
@@ -140,6 +141,39 @@ async function loadJobWithBooking(job_id) {
     [job_id]
   );
   return rows[0] || null;
+}
+
+/* Resolves the list of recipients for a job's incentive.
+ *
+ *   - If the job has `assigned_field_team_id`, returns the team members with
+ *     their share_pct (normalized so shares always sum to 1.0).
+ *   - Otherwise falls back to the legacy single-agent path: returns one
+ *     row with share=1.0 for `assigned_team_id`.
+ *
+ * Returned shape: [{ agent_id, role, weight }]  where 0 < weight <= 1
+ */
+async function resolveJobRecipients(job) {
+  if (job.assigned_field_team_id) {
+    const { rows: members } = await query(
+      `SELECT agent_id, role, share_pct
+         FROM field_team_members
+        WHERE team_id = $1 AND is_active = TRUE`,
+      [job.assigned_field_team_id]
+    );
+    if (members.length > 0) {
+      const totalShares = members.reduce((s, m) => s + Number(m.share_pct || 0), 0) || 1;
+      return members.map((m) => ({
+        agent_id: m.agent_id,
+        role: m.role,
+        weight: Number(m.share_pct || 0) / totalShares,
+      }));
+    }
+    // Team has no active members — fall through to single-agent path if set.
+  }
+  if (job.assigned_team_id) {
+    return [{ agent_id: job.assigned_team_id, role: 'solo', weight: 1 }];
+  }
+  return [];
 }
 
 async function loadRatingForJob(job_id) {
@@ -158,64 +192,68 @@ async function loadRatingForJob(job_id) {
 async function accrueForJob({ job_id }) {
   if (!job_id) return [];
   const job = await loadJobWithBooking(job_id);
-  if (!job || !job.assigned_team_id) return [];
+  if (!job) return [];
 
-  const agent_id = job.assigned_team_id;
+  const recipients = await resolveJobRecipients(job);
+  if (recipients.length === 0) return [];
+
   const rules = await loadRules();
-  const stats = await loadAgentStats(agent_id);
-  const tier = stats?.current_tier || 'bronze';
-  const tierMult = multiplierForTier(rules, tier);
-
-  // Make sure the agent has a current-month batch — keeps the ledger tidy.
-  await ensureBatchForAgentMonth({ agent_id, month: monthKey() }).catch(() => {});
-
   const inserted = [];
 
-  /* 1. Base completion */
-  if (!(await existingIncentive(job_id, 'base_completion'))) {
-    const baseAmt = Math.round(Number(rules.base_completion_paise) * tierMult);
-    const id = await insertIncentive({
-      agent_id, job_id, amount_paise: baseAmt,
-      reason: 'base_completion', tier,
-    });
-    if (id) inserted.push(id);
-  }
+  /* Helper: insert one accrual line per recipient with their weighted share.
+   * Idempotency check covers the whole job-reason tuple. The first call
+   * inserts N rows (one per recipient); subsequent calls early-return. */
+  const accrueReason = async (reason, totalPaiseFn) => {
+    if (await existingIncentive(job_id, reason)) return;
+    for (const r of recipients) {
+      // Per-recipient tier multiplier from their own stats row.
+      const stats = await loadAgentStats(r.agent_id);
+      const tier = stats?.current_tier || 'bronze';
+      const tierMult = multiplierForTier(rules, tier);
+      const total = totalPaiseFn(tierMult);
+      if (total <= 0) continue;
+      const amount = Math.round(total * r.weight);
+      if (amount <= 0) continue;
+      await ensureBatchForAgentMonth({ agent_id: r.agent_id, month: monthKey() }).catch(() => {});
+      const id = await insertIncentive({
+        agent_id: r.agent_id, job_id, amount_paise: amount,
+        reason, tier,
+        // When the job was team-assigned, attribute the line to that team
+        // so reports can roll up "Team Alpha earned ₹X this month".
+        team_id: job.assigned_field_team_id || null,
+      });
+      if (id) inserted.push(id);
+    }
+  };
+
+  /* 1. Base completion — every recipient gets their share of the base pool. */
+  await accrueReason('base_completion', (tierMult) =>
+    Math.round(Number(rules.base_completion_paise) * tierMult)
+  );
 
   /* 2. Addon upsell */
-  if (!(await existingIncentive(job_id, 'addon_upsell'))) {
-    let addons = [];
-    if (Array.isArray(job.addons)) addons = job.addons;
-    else if (typeof job.addons === 'string') {
-      try { addons = JSON.parse(job.addons) || []; } catch (_) { addons = []; }
-    }
-    if (addons.length > 0) {
-      const addonRevenue = await estimateAddonRevenuePaise(addons, job);
-      const commission = Math.round(addonRevenue * Number(rules.addon_commission_pct));
-      if (commission > 0) {
-        const id = await insertIncentive({
-          agent_id, job_id, amount_paise: commission,
-          reason: 'addon_upsell', tier,
-        });
-        if (id) inserted.push(id);
-      }
+  let addons = [];
+  if (Array.isArray(job.addons)) addons = job.addons;
+  else if (typeof job.addons === 'string') {
+    try { addons = JSON.parse(job.addons) || []; } catch (_) { addons = []; }
+  }
+  if (addons.length > 0) {
+    const addonRevenue = await estimateAddonRevenuePaise(addons, job);
+    const commissionTotal = Math.round(addonRevenue * Number(rules.addon_commission_pct));
+    if (commissionTotal > 0) {
+      await accrueReason('addon_upsell', () => commissionTotal);
     }
   }
 
-  /* 3. Rating bonus (only if a rating exists) */
-  if (!(await existingIncentive(job_id, 'rating_bonus'))) {
-    const rating = await loadRatingForJob(job_id);
-    if (rating) {
-      let bonus = 0;
-      if (rating >= 5)      bonus = Number(rules.rating_5_paise) || 0;
-      else if (rating === 4) bonus = Number(rules.rating_4_paise) || 0;
-      else if (rating === 3) bonus = Number(rules.rating_3_paise) || 0;
-      if (bonus > 0) {
-        const id = await insertIncentive({
-          agent_id, job_id, amount_paise: bonus,
-          reason: 'rating_bonus', tier,
-        });
-        if (id) inserted.push(id);
-      }
+  /* 3. Rating bonus — split equally too (the team got the rating together). */
+  const rating = await loadRatingForJob(job_id);
+  if (rating) {
+    let bonus = 0;
+    if (rating >= 5)      bonus = Number(rules.rating_5_paise) || 0;
+    else if (rating === 4) bonus = Number(rules.rating_4_paise) || 0;
+    else if (rating === 3) bonus = Number(rules.rating_3_paise) || 0;
+    if (bonus > 0) {
+      await accrueReason('rating_bonus', () => bonus);
     }
   }
 

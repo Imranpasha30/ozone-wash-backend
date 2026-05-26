@@ -57,6 +57,107 @@ const repo = {
     return rows;
   },
 
+  /**
+   * Detailed earnings dashboard for one agent. Pulls everything the UI needs
+   * in a single round-trip:
+   *   - profile (name, phone, current tier, agent_stats summary)
+   *   - lifetime totals (paid vs pending vs total)
+   *   - this-month + last-month totals for at-a-glance comparison
+   *   - last-12-month series (chart-ready)
+   *   - breakdown by reason (base / addon / rating)
+   *   - breakdown by team (current + historical teams)
+   *   - last 30 ledger transactions with job + team labels
+   */
+  async detailedStatsForAgent(agent_id) {
+    const [
+      profileRes, lifetimeRes, monthlyRes, byReasonRes, byTeamRes, txRes, currentTeamRes,
+    ] = await Promise.all([
+      query(
+        `SELECT u.id, u.name, u.phone, u.role,
+                s.current_tier, s.turnover_paise, s.completed_jobs_30d
+           FROM users u
+      LEFT JOIN agent_stats s ON s.agent_id = u.id
+          WHERE u.id = $1`,
+        [agent_id]
+      ),
+      query(
+        `SELECT
+            COALESCE(SUM(amount_paise),0)::bigint AS total,
+            COALESCE(SUM(CASE WHEN status = 'paid' THEN amount_paise ELSE 0 END),0)::bigint AS paid,
+            COALESCE(SUM(CASE WHEN status <> 'paid' THEN amount_paise ELSE 0 END),0)::bigint AS pending,
+            COUNT(DISTINCT job_id)::int AS jobs_count
+           FROM incentives WHERE agent_id = $1`,
+        [agent_id]
+      ),
+      query(
+        `SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS month,
+                COALESCE(SUM(amount_paise),0)::bigint AS total,
+                COUNT(*)::int AS lines
+           FROM incentives
+          WHERE agent_id = $1
+            AND created_at > NOW() - INTERVAL '12 months'
+       GROUP BY 1 ORDER BY 1`,
+        [agent_id]
+      ),
+      query(
+        `SELECT reason,
+                COALESCE(SUM(amount_paise),0)::bigint AS total,
+                COUNT(*)::int AS lines
+           FROM incentives WHERE agent_id = $1
+       GROUP BY reason ORDER BY total DESC`,
+        [agent_id]
+      ),
+      query(
+        `SELECT i.team_id,
+                t.name as team_name,
+                COALESCE(SUM(i.amount_paise),0)::bigint AS total,
+                COUNT(*)::int AS lines,
+                COUNT(DISTINCT i.job_id)::int AS jobs
+           FROM incentives i
+      LEFT JOIN field_teams t ON t.id = i.team_id
+          WHERE i.agent_id = $1
+       GROUP BY i.team_id, t.name
+       ORDER BY total DESC`,
+        [agent_id]
+      ),
+      query(
+        `SELECT i.id, i.job_id, i.amount_paise, i.reason, i.tier, i.status,
+                i.created_at, i.paid_at,
+                t.name as team_name,
+                j.scheduled_at, j.job_type,
+                COALESCE(c.name, c.phone) AS customer_label
+           FROM incentives i
+      LEFT JOIN field_teams t ON t.id = i.team_id
+      LEFT JOIN jobs j ON j.id = i.job_id
+      LEFT JOIN users c ON c.id = j.customer_id
+          WHERE i.agent_id = $1
+       ORDER BY i.created_at DESC
+          LIMIT 30`,
+        [agent_id]
+      ),
+      query(
+        `SELECT t.id, t.name, m.role, m.share_pct,
+                u.name as leader_name
+           FROM field_team_members m
+           JOIN field_teams t ON t.id = m.team_id
+           JOIN users u ON u.id = t.leader_id
+          WHERE m.agent_id = $1 AND m.is_active = TRUE AND t.is_active = TRUE
+          LIMIT 1`,
+        [agent_id]
+      ),
+    ]);
+
+    return {
+      profile: profileRes.rows[0] || null,
+      lifetime: lifetimeRes.rows[0] || { total: 0, paid: 0, pending: 0, jobs_count: 0 },
+      monthly: monthlyRes.rows,
+      by_reason: byReasonRes.rows,
+      by_team: byTeamRes.rows,
+      transactions: txRes.rows,
+      current_team: currentTeamRes.rows[0] || null,
+    };
+  },
+
   async lastPaidBatch(agent_id) {
     const { rows } = await query(
       `SELECT id, month, total_paise, paid_at, payment_ref

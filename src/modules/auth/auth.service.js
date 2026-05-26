@@ -3,17 +3,45 @@ const jwt = require('jsonwebtoken');
 const AuthRepository = require('./auth.repository');
 const NotificationService = require('../../services/notification.service');
 
+/**
+ * Demo / reviewer bypass accounts. Each entry maps a static phone to a static
+ * OTP and the role the auto-provisioned user should land in. Used for:
+ *   - Google Play Console reviewer login (customer slot)
+ *   - Field-team demo login when a real technician phone isn't available
+ *
+ * All four env vars are optional — if any is unset the corresponding bypass
+ * is dead code and the real OTP flow runs unchanged. The phone + OTP pair
+ * MUST satisfy the controller's validation rules (phone matches
+ * `^[6-9]\d{9}$` and OTP is a 6-digit numeric string).
+ */
+const buildBypassMap = () => {
+  const map = {};
+  if (process.env.REVIEWER_PHONE && process.env.REVIEWER_OTP) {
+    map[process.env.REVIEWER_PHONE] = {
+      otp: process.env.REVIEWER_OTP,
+      role: 'customer',
+      name: 'Play Reviewer',
+    };
+  }
+  if (process.env.REVIEWER_FIELD_PHONE && process.env.REVIEWER_FIELD_OTP) {
+    map[process.env.REVIEWER_FIELD_PHONE] = {
+      otp: process.env.REVIEWER_FIELD_OTP,
+      role: 'field_team',
+      name: 'Field Demo',
+    };
+  }
+  return map;
+};
+
 const AuthService = {
 
   sendOtp: async (phone) => {
-    // Reviewer bypass — for Google Play Console reviewer login only.
-    // When REVIEWER_PHONE + REVIEWER_OTP env vars are set, send-otp for that
-    // phone is a no-op (no DB row, no SMS, no WhatsApp). The static OTP is
-    // accepted by verifyOtp below.
-    const REVIEWER_PHONE = process.env.REVIEWER_PHONE;
-    const REVIEWER_OTP   = process.env.REVIEWER_OTP;
-    if (REVIEWER_PHONE && REVIEWER_OTP && phone === REVIEWER_PHONE) {
-      console.log(`📱 Reviewer bypass: phone=${phone} (OTP=${REVIEWER_OTP})`);
+    // Reviewer bypass — see buildBypassMap comment.
+    // For any phone listed in the bypass map, send-otp is a no-op (no DB row,
+    // no SMS, no WhatsApp). The static OTP is accepted by verifyOtp below.
+    const bypass = buildBypassMap();
+    if (bypass[phone]) {
+      console.log(`📱 Reviewer bypass: phone=${phone} (OTP=${bypass[phone].otp}) role=${bypass[phone].role}`);
       return { message: 'OTP sent successfully' };
     }
 
@@ -41,18 +69,18 @@ const AuthService = {
   },
 
   verifyOtp: async (phone, otpCode, fcmToken = null) => {
-    // Reviewer bypass — see sendOtp comment. Static phone + static OTP combo
-    // skips the OTP table lookup and proceeds to find-or-create + JWT.
-    const REVIEWER_PHONE = process.env.REVIEWER_PHONE;
-    const REVIEWER_OTP   = process.env.REVIEWER_OTP;
-    if (REVIEWER_PHONE && REVIEWER_OTP &&
-        phone === REVIEWER_PHONE && otpCode === REVIEWER_OTP) {
+    // Reviewer bypass — static phone + static OTP combo skips the OTP table
+    // lookup and proceeds to find-or-create + JWT. Phone determines role
+    // (customer or field_team) via the bypass map.
+    const bypass = buildBypassMap();
+    const entry = bypass[phone];
+    if (entry && otpCode === entry.otp) {
       let user = await AuthRepository.findByPhone(phone);
       if (!user) {
         user = await AuthRepository.createUser({
           phone,
-          role: 'customer',
-          name: 'Play Reviewer',
+          role: entry.role,
+          name: entry.name,
         });
       }
       if (fcmToken) {

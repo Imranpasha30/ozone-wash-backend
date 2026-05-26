@@ -126,6 +126,22 @@ exports.getMyHistory = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// GET /api/v1/incentives/me/stats — full breakdown for the logged-in agent.
+exports.getMyDetailedStats = async (req, res, next) => {
+  try {
+    const stats = await repo.detailedStatsForAgent(req.user.id);
+    return sendSuccess(res, stats);
+  } catch (err) { next(err); }
+};
+
+// GET /api/v1/incentives/agent/:agentId/stats — admin drilling into any agent.
+exports.getAgentDetailedStats = async (req, res, next) => {
+  try {
+    const stats = await repo.detailedStatsForAgent(req.params.agentId);
+    return sendSuccess(res, stats);
+  } catch (err) { next(err); }
+};
+
 /* ── Admin ───────────────────────────────────────────────────────── */
 
 // GET /api/v1/admin/incentives/payouts?month=YYYY-MM

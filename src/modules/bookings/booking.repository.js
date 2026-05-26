@@ -3,13 +3,18 @@ const db = require('../../config/db');
 const BookingRepository = {
 
   create: async (data) => {
+    // Auto-confirm new tank bookings (status='confirmed') to match the auto-wash
+    // flow where bookings land at 'scheduled' immediately without admin approval.
+    // The job row is still auto-created downstream and goes through the normal
+    // crew assignment flow. Admin can still cancel from the Bookings page if
+    // needed. Keeps the schema default 'pending' so existing data isn't touched.
     const result = await db.query(
       `INSERT INTO bookings (
         customer_id, tank_type, tank_size_litres, tanks, address, lat, lng,
         slot_time, addons, amc_plan, payment_method, amount_paise,
         property_type, contact_name, contact_phone,
-        job_type, resource_type
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+        job_type, resource_type, status
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
       RETURNING *`,
       [
         data.customer_id, data.tank_type, data.tank_size_litres,
@@ -20,7 +25,8 @@ const BookingRepository = {
         data.property_type || 'residential',
         data.contact_name || null,
         data.contact_phone || null,
-        'tank_cleaning', 'tank'
+        'tank_cleaning', 'tank',
+        'confirmed',
       ]
     );
     return result.rows[0];

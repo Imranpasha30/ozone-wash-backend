@@ -22,12 +22,31 @@ app.use(helmet({
 }));
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
-const ALLOWED_ORIGINS = process.env.NODE_ENV === 'production'
-  ? (process.env.ALLOWED_ORIGINS || '').split(',').map(o => o.trim()).filter(Boolean)
-  : true; // Allow all in dev
+// Always allow localhost + LAN-range origins so the web dev server (Expo on
+// 8081) can hit the API regardless of NODE_ENV. In production, also allow the
+// explicit ALLOWED_ORIGINS list. The function form is required because the
+// allow set is dynamic per request origin.
+const STATIC_ALLOWED = (process.env.ALLOWED_ORIGINS || '')
+  .split(',').map(o => o.trim()).filter(Boolean);
+
+// Matches: http://localhost:<port> | http://127.0.0.1:<port> | http://192.168.x.x:<port>
+//          http://10.x.x.x:<port>  | http://172.16-31.x.x:<port>  (RFC1918 private ranges)
+const PRIVATE_ORIGIN_REGEX = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/;
+
+const corsOriginCheck = (origin, callback) => {
+  // Same-origin / no-origin (curl, server-to-server) → allow
+  if (!origin) return callback(null, true);
+  // Production allow-list
+  if (STATIC_ALLOWED.includes(origin)) return callback(null, true);
+  // Always allow localhost + RFC1918 dev origins (helps Expo web on LAN)
+  if (PRIVATE_ORIGIN_REGEX.test(origin)) return callback(null, true);
+  // In non-production, be permissive
+  if (process.env.NODE_ENV !== 'production') return callback(null, true);
+  callback(new Error(`CORS: origin '${origin}' not allowed`));
+};
 
 app.use(cors({
-  origin: ALLOWED_ORIGINS,
+  origin: corsOriginCheck,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: false,

@@ -68,6 +68,9 @@ router.patch('/:id/complete', authenticate, requireRole('admin', 'field_team'), 
 // Job requests (field team requests, admin manages)
 router.get('/available', authenticate, requireRole('field_team'), JobController.getAvailableJobs);
 router.post('/:id/request', authenticate, requireRole('field_team'), JobController.requestJob);
+// Field team — see own requests (any status). MUST come before /requests
+// (admin-only) so the more specific path wins.
+router.get('/my-requests', authenticate, requireRole('field_team'), JobController.getMyJobRequests);
 router.get('/requests', authenticate, requireRole('admin'), JobController.getJobRequests);
 router.get('/requests/count', authenticate, requireRole('admin'), JobController.getPendingRequestCount);
 router.patch('/requests/:requestId/approve', authenticate, requireRole('admin'), JobController.approveJobRequest);

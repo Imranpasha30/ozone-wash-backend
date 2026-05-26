@@ -2,6 +2,7 @@ const BookingRepository = require('./booking.repository');
 const JobRepository = require('../jobs/job.repository');
 const AmcRepository = require('../amc/amc.repository');
 const EcoScoreRepository = require('../ecoscore/ecoscore.repository');
+const AdminAlertsService = require('../admin-alerts/admin-alerts.service');
 
 // Pricing config — one-time service targets ~₹1500+
 const BASE_PRICES = {
@@ -172,6 +173,32 @@ const BookingService = {
       location_lng: data.lng || null,
     });
 
+    // 7. Fire-and-forget conflict detection. If the slot is overbooked or no
+    //    team is available, an admin alert is queued; never blocks the user.
+    AdminAlertsService.detectBookingConflicts({
+      bookingId: booking.id,
+      jobId: job?.id,
+      slotTime: data.slot_time,
+    }).catch((e) => { console.warn('[alerts] detectBookingConflicts failed:', e?.message); });
+
+    // 8. Info-level alert: new booking entered the system. Lets admin see
+    //    activity without polling the bookings list.
+    (async () => {
+      try {
+        const { rows } = await require('../../config/db').query(
+          `SELECT name FROM users WHERE id = $1`, [customerId]
+        );
+        await AdminAlertsService.recordNewBooking({
+          bookingId: booking.id,
+          jobId: job?.id,
+          kind: 'tank',
+          customerName: rows[0]?.name,
+          slotTime: data.slot_time,
+          summary: `${booking.tank_type} ${booking.tank_size_litres}L`,
+        });
+      } catch (e) { console.warn('[alerts] new booking record failed:', e?.message); }
+    })();
+
     return {
       booking,
       job,
@@ -194,14 +221,130 @@ const BookingService = {
     return booking;
   },
 
-  // Get all bookings for a customer
+  // Get all bookings for a customer.
+  //
+  // Returns BOTH tank-cleaning bookings (from the `bookings` table) AND
+  // auto-wash jobs (from the `jobs` table where job_type='auto_wash').
+  // Auto-wash entries are projected into a booking-shaped envelope so the
+  // existing client can render them without schema sniffing — they carry a
+  // `kind` discriminator ('tank' | 'auto_wash') so the UI can branch.
   getMyBookings: async (customerId) => {
-    return await BookingRepository.findByCustomer(customerId);
+    const { query } = require('../../config/db');
+    const [tankRows, autoRows] = await Promise.all([
+      BookingRepository.findByCustomer(customerId),
+      query(
+        `SELECT j.id, j.status, j.scheduled_at, j.completed_at,
+                j.service_package, j.addons_booked,
+                j.base_price_paise, j.addons_price_paise, j.total_price_paise,
+                j.gated_community,
+                v.vehicle_type, v.registration_number, v.nickname
+           FROM jobs j
+           LEFT JOIN vehicles v ON v.id = j.vehicle_id
+          WHERE j.customer_id = $1 AND j.job_type = 'auto_wash'
+          ORDER BY j.scheduled_at DESC`,
+        [customerId],
+      ).then((r) => r.rows),
+    ]);
+
+    const tankShaped = (tankRows || []).map((b) => ({ ...b, kind: 'tank' }));
+    const autoShaped = (autoRows || []).map((j) => ({
+      id: j.id,
+      kind: 'auto_wash',
+      status: j.status,
+      slot_time: j.scheduled_at,
+      completed_at: j.completed_at,
+      amount_paise: j.total_price_paise,
+      payment_method: 'cod',            // v1: auto-wash is COD-only
+      payment_status: 'pending',
+      // Tank-shaped fields the UI expects, mapped from auto-wash
+      tank_type: 'auto_wash',
+      tank_size_litres: null,
+      address: null,
+      addons: j.addons_booked || [],
+      // Auto-wash-specific extras
+      service_package: j.service_package,
+      vehicle_type: j.vehicle_type,
+      registration_number: j.registration_number,
+      vehicle_nickname: j.nickname,
+      gated_community: j.gated_community,
+    }));
+
+    // Merge + sort by date desc.
+    return [...tankShaped, ...autoShaped].sort((a, b) => {
+      const da = new Date(a.slot_time || a.created_at || 0).getTime();
+      const db = new Date(b.slot_time || b.created_at || 0).getTime();
+      return db - da;
+    });
   },
 
   // Get all bookings (admin only)
+  //
+  // Returns BOTH tank-cleaning bookings (from the `bookings` table) AND
+  // auto-wash jobs (from the `jobs` table where job_type='auto_wash').
+  // Mirrors the customer-side getMyBookings merge so the admin sees the full
+  // pipeline in one list. `kind` discriminator lets the UI branch on tile copy.
   getAllBookings: async (filters) => {
-    return await BookingRepository.findAll(filters);
+    const { query } = require('../../config/db');
+    const { status, date, limit = 20, offset = 0 } = filters || {};
+
+    // Tank-cleaning side: existing repo call (already paginated + filtered).
+    const tankRows = await BookingRepository.findAll(filters);
+
+    // Auto-wash side: same filter shape, joined to vehicle + customer.
+    let q = `SELECT j.id, j.status, j.scheduled_at, j.completed_at,
+                    j.service_package, j.addons_booked,
+                    j.base_price_paise, j.addons_price_paise, j.total_price_paise,
+                    j.gated_community, j.assigned_team_id, j.created_at,
+                    v.vehicle_type, v.registration_number, v.nickname,
+                    u.name as customer_name, u.phone as customer_phone,
+                    t.name as team_name
+               FROM jobs j
+          LEFT JOIN vehicles v ON v.id = j.vehicle_id
+               JOIN users u ON u.id = j.customer_id
+          LEFT JOIN users t ON t.id = j.assigned_team_id
+              WHERE j.job_type = 'auto_wash'`;
+    const params = [];
+    let i = 1;
+    if (status) { q += ` AND j.status = $${i++}`; params.push(status); }
+    if (date)   { q += ` AND DATE(j.scheduled_at) = $${i++}`; params.push(date); }
+    q += ` ORDER BY j.created_at DESC LIMIT $${i++} OFFSET $${i++}`;
+    params.push(limit, offset);
+    const autoRows = (await query(q, params)).rows;
+
+    const tankShaped = (tankRows || []).map((b) => ({ ...b, kind: 'tank' }));
+    const autoShaped = (autoRows || []).map((j) => ({
+      id: j.id,
+      kind: 'auto_wash',
+      status: j.status,
+      slot_time: j.scheduled_at,
+      completed_at: j.completed_at,
+      amount_paise: j.total_price_paise,
+      payment_method: 'cod',
+      payment_status: 'pending',
+      tank_type: 'auto_wash',
+      tank_size_litres: null,
+      address: null,
+      addons: j.addons_booked || [],
+      service_package: j.service_package,
+      vehicle_type: j.vehicle_type,
+      registration_number: j.registration_number,
+      vehicle_nickname: j.nickname,
+      gated_community: j.gated_community,
+      customer_name: j.customer_name,
+      customer_phone: j.customer_phone,
+      job_id: j.id, // auto-wash IS the job, so same id
+      job_status: j.status,
+      assigned_team_id: j.assigned_team_id,
+      team_name: j.team_name,
+      created_at: j.created_at,
+    }));
+
+    // Merge + sort newest first.
+    return [...tankShaped, ...autoShaped].sort((a, b) => {
+      const da = new Date(a.slot_time || a.created_at || 0).getTime();
+      const db = new Date(b.slot_time || b.created_at || 0).getTime();
+      return db - da;
+    });
   },
 
   // Update booking status directly (admin only)

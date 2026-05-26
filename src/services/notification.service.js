@@ -356,6 +356,100 @@ const NotificationService = {
     ]);
   },
 
+  /* ──────────────────────────────────────────────────────────────────────
+   * AUTO WASH NOTIFICATIONS
+   *
+   * Calls the existing `sendWhatsApp(phone, templateName, params)` wrapper.
+   * That wrapper is fire-and-forget with try/catch — if a template hasn't
+   * been registered on Wati yet, it logs "WhatsApp error: template not found"
+   * but does NOT throw, so booking/step lifecycle is never blocked.
+   *
+   * Template registration spec lives at:
+   *   docs/wati-auto-wash-templates.md
+   *
+   * Each function below also keeps a `console.log` line as a development
+   * trace so the ops team can confirm the trigger fires even while Wati
+   * templates are being approved (Wati template approval typically
+   * takes 24-48h).
+   * ───────────────────────────────────────────────────────────────────── */
+
+  autoWashBookingConfirmed: async (customerPhone, customerName, jobId, scheduledAt, packageName) => {
+    console.log(`[autowash.notify] booking_confirmed → ${customerPhone} | ${customerName} | job ${jobId} | ${new Date(scheduledAt).toLocaleString()} | ${packageName}`);
+    try {
+      await NotificationService.sendWhatsApp(customerPhone, 'auto_wash_booking_confirmed', [
+        customerName || 'Customer',
+        String(jobId).slice(0, 8).toUpperCase(),
+        new Date(scheduledAt).toLocaleString('en-IN'),
+        packageName || '—',
+      ]);
+    } catch (e) { /* fire-and-forget */ }
+  },
+
+  autoWashCrewAssigned: async (customerPhone, crewName, jobId) => {
+    console.log(`[autowash.notify] crew_assigned → ${customerPhone} | crew ${crewName} | job ${jobId}`);
+    try {
+      await NotificationService.sendWhatsApp(customerPhone, 'auto_wash_crew_assigned', [
+        crewName || 'Your crew',
+        String(jobId).slice(0, 8).toUpperCase(),
+      ]);
+    } catch (e) {}
+  },
+
+  autoWashStepStarted: async (customerPhone, jobId, stepNumber, stepLabel) => {
+    console.log(`[autowash.notify] step_${stepNumber}_started → ${customerPhone} | ${stepLabel} | job ${jobId}`);
+    try {
+      await NotificationService.sendWhatsApp(customerPhone, 'auto_wash_step_started', [
+        String(stepNumber),
+        stepLabel || `Step ${stepNumber}`,
+      ]);
+    } catch (e) {}
+  },
+
+  autoWashFoggingStarted: async (customerPhone, jobId) => {
+    // SAFETY-CRITICAL message: customer must not re-enter vehicle for 15 min.
+    console.log(`[autowash.notify] ⚠️  FOGGING_STARTED → ${customerPhone} | job ${jobId} | Do not enter vehicle for 15 minutes`);
+    try {
+      await NotificationService.sendWhatsApp(customerPhone, 'auto_wash_fogging_started', [
+        String(jobId).slice(0, 8).toUpperCase(),
+      ]);
+    } catch (e) {}
+  },
+
+  autoWashJobComplete: async (customerPhone, customerName, jobId, ecoScore, ecoBadge, waterSaved) => {
+    console.log(`[autowash.notify] job_complete → ${customerPhone} | ${customerName} | job ${jobId} | EcoScore ${ecoScore} (${ecoBadge}) | saved ${waterSaved}L`);
+    const certUrl = `https://ozonewash.in/verify/AW-${String(jobId).slice(0, 12)}`;
+    try {
+      await NotificationService.sendWhatsApp(customerPhone, 'auto_wash_job_complete', [
+        customerName || 'Customer',
+        String(ecoScore),
+        String(ecoBadge || '').toUpperCase(),
+        String(waterSaved || 0),
+        certUrl,
+      ]);
+    } catch (e) {}
+  },
+
+  autoWashSubscriptionRenewalDue: async (customerPhone, planName, daysLeft, priceLabel) => {
+    console.log(`[autowash.notify] subscription_renewal_due → ${customerPhone} | ${planName} | ${daysLeft} days | ${priceLabel}`);
+    try {
+      await NotificationService.sendWhatsApp(customerPhone, 'auto_wash_subscription_renewal_due', [
+        planName,
+        String(daysLeft),
+        priceLabel,
+      ]);
+    } catch (e) {}
+  },
+
+  autoWashCarBirthday: async (customerPhone, nickname, age) => {
+    console.log(`[autowash.notify] car_birthday → ${customerPhone} | ${nickname} | ${age}y`);
+    try {
+      await NotificationService.sendWhatsApp(customerPhone, 'auto_wash_car_birthday', [
+        nickname || 'Your car',
+        String(age),
+      ]);
+    } catch (e) {}
+  },
+
 };
 
 module.exports = NotificationService;

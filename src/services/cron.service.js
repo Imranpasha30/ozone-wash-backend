@@ -3,6 +3,7 @@ const AmcRepository = require('../modules/amc/amc.repository');
 const NotificationService = require('./notification.service');
 const IncentivesCron = require('../cron/incentivesNightly');
 const EcoScoreCron = require('../cron/ecoscoreNightly');
+const AdminAlertsService = require('../modules/admin-alerts/admin-alerts.service');
 const db = require('../config/db');
 
 const CronService = {
@@ -23,6 +24,25 @@ const CronService = {
     cron.schedule('*/30 * * * *', async () => {
       await CronService.checkSlaBreaches();
     });
+
+    // Admin alert sweep — every 5 minutes. Detects time-sensitive issues:
+    //   unassigned jobs aging > 3h, jobs starting in <1h with no team,
+    //   SLA breaches (scheduled-but-not-started, in_progress overrun),
+    //   AMC contracts expiring soon / expired-but-still-active.
+    // Idempotent — duplicates within 24h are suppressed by the alerts repo.
+    cron.schedule('*/5 * * * *', async () => {
+      try {
+        const out = await AdminAlertsService.runTimeBasedChecks();
+        const total = Object.values(out).reduce((a, b) => a + b, 0);
+        if (total > 0) console.log('[alerts] sweep queued', total, 'new alerts:', out);
+      } catch (e) { console.error('[alerts] sweep failed:', e?.message); }
+    });
+    // Run once on boot so the dashboard isn't empty during the first 5 min window.
+    setTimeout(() => {
+      AdminAlertsService.runTimeBasedChecks()
+        .then((out) => console.log('[alerts] boot sweep:', out))
+        .catch(() => {});
+    }, 3_000);
 
     // Nightly EcoScore engine (02:00 IST) — recompute every customer's score
     EcoScoreCron.start();

@@ -13,7 +13,23 @@ const authenticate = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // { id, phone, role }
+    // Admin tokens have a different shape — `{ sub, type:'admin', admin_role,
+    // permissions, session_id }` — issued by admin-auth.service.js. Map them
+    // into the user-shaped `req.user` so existing `requireRole('admin')`
+    // checks on shared routes (e.g. /api/v1/bookings) accept them too. We
+    // skip session_id revocation checks here; for stricter admin-only routes
+    // use authenticateAdmin from admin-auth.middleware.js.
+    if (decoded.type === 'admin') {
+      req.user = {
+        id: decoded.sub,
+        role: 'admin',
+        admin_role: decoded.admin_role,
+        username: decoded.username,
+        permissions: decoded.permissions || [],
+      };
+    } else {
+      req.user = decoded; // { id, phone, role }
+    }
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {

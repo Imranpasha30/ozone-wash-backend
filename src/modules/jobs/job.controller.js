@@ -324,6 +324,16 @@ const JobController = {
     }
   },
 
+  // GET /api/v1/jobs/my-requests (field team — own requests, any status)
+  getMyJobRequests: async (req, res, next) => {
+    try {
+      const requests = await JobService.getMyJobRequests(req.user.id);
+      return sendSuccess(res, { requests });
+    } catch (err) {
+      next(err);
+    }
+  },
+
   // GET /api/v1/jobs/requests (admin)
   getJobRequests: async (req, res, next) => {
     try {

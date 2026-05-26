@@ -36,15 +36,31 @@ const JobRepository = {
   },
 
   findByTeam: async (teamId) => {
+    // Returns BOTH tank-cleaning and auto-wash jobs that this agent will work.
+    // Includes jobs assigned to them as an individual (legacy single-agent
+    // path) AND jobs assigned to any field team they're currently an active
+    // member of — so every team member sees the same job list.
     const result = await db.query(
       `SELECT j.*,
         c.name as customer_name, c.phone as customer_phone,
-        b.address, b.tank_type, b.tank_size_litres
+        b.address as b_address, b.tank_type, b.tank_size_litres,
+        v.vehicle_type, v.registration_number, v.nickname as vehicle_nickname,
+        v.make as vehicle_make, v.model as vehicle_model,
+        COALESCE(b.address, '(see customer)') as address,
+        ft.name as field_team_name
        FROM jobs j
        JOIN users c ON c.id = j.customer_id
        LEFT JOIN bookings b ON b.id = j.booking_id
-       WHERE j.assigned_team_id = $1
-         AND j.status NOT IN ('cancelled')
+       LEFT JOIN vehicles v ON v.id = j.vehicle_id
+       LEFT JOIN field_teams ft ON ft.id = j.assigned_field_team_id
+       WHERE j.status NOT IN ('cancelled')
+         AND (
+           j.assigned_team_id = $1
+           OR j.assigned_field_team_id IN (
+             SELECT team_id FROM field_team_members
+              WHERE agent_id = $1 AND is_active = TRUE
+           )
+         )
        ORDER BY j.scheduled_at ASC`,
       [teamId]
     );
@@ -82,6 +98,23 @@ const JobRepository = {
         updated_at = NOW()
        WHERE id = $2 RETURNING *`,
       [teamId, jobId]
+    );
+    return result.rows[0];
+  },
+
+  // Team-based assignment. `fieldTeamId` is the field_teams.id (the whole
+  // crew); `leadAgentId` is the agent who requested or the team leader —
+  // stored in the legacy assigned_team_id column so older queries still
+  // return the job. Every active member of the team will see this job
+  // via findMyJobs (which now also unions through field_team_members).
+  assignToFieldTeam: async (jobId, fieldTeamId, leadAgentId) => {
+    const result = await db.query(
+      `UPDATE jobs SET
+        assigned_field_team_id = $1,
+        assigned_team_id       = $2,
+        updated_at             = NOW()
+       WHERE id = $3 RETURNING *`,
+      [fieldTeamId, leadAgentId || null, jobId]
     );
     return result.rows[0];
   },
@@ -223,6 +256,9 @@ const JobRepository = {
   // ── Available Jobs (unassigned, for field team to browse) ─────────────
 
   findAvailable: async () => {
+    // Available = no individual agent assigned AND no field team assigned.
+    // Once a team is on it, every team member already sees it via My Jobs;
+    // it shouldn't keep appearing on the public board.
     const result = await db.query(
       `SELECT j.*,
         c.name as customer_name, c.phone as customer_phone,
@@ -231,6 +267,7 @@ const JobRepository = {
        JOIN users c ON c.id = j.customer_id
        LEFT JOIN bookings b ON b.id = j.booking_id
        WHERE j.assigned_team_id IS NULL
+         AND j.assigned_field_team_id IS NULL
          AND j.status = 'scheduled'
        ORDER BY j.scheduled_at ASC`
     );
@@ -276,6 +313,28 @@ const JobRepository = {
     query += ` ORDER BY jr.created_at DESC LIMIT $${i++} OFFSET $${i++}`;
     params.push(limit, offset);
     const result = await db.query(query, params);
+    return result.rows;
+  },
+
+  // Get all job requests for a specific field team member (any status, newest
+  // first). Joins job + booking + customer so the UI has everything to render
+  // a card without follow-up calls.
+  findRequestsByTeam: async (teamId, { limit = 50 } = {}) => {
+    const result = await db.query(
+      `SELECT jr.id as request_id, jr.status as request_status,
+        jr.created_at as requested_at, jr.updated_at as request_updated_at,
+        j.id, j.scheduled_at, j.status as job_status, j.assigned_team_id,
+        c.name as customer_name, c.phone as customer_phone,
+        b.tank_type, b.tank_size_litres, b.address, b.addons
+       FROM job_requests jr
+       JOIN jobs j ON j.id = jr.job_id
+       JOIN users c ON c.id = j.customer_id
+       LEFT JOIN bookings b ON b.id = j.booking_id
+       WHERE jr.team_id = $1
+       ORDER BY jr.created_at DESC
+       LIMIT $2`,
+      [teamId, limit]
+    );
     return result.rows;
   },
 
