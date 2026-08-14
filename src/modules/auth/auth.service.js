@@ -30,8 +30,56 @@ const buildBypassMap = () => {
       name: 'Field Demo',
     };
   }
+  // AMC demo customer — lands as customer AND auto-enrolls into an active
+  // AMC contract on first login so the demo flow shows AMC-member screens
+  // (Premium tier eco hints, AMC dashboard chip on Profile, etc).
+  if (process.env.REVIEWER_AMC_PHONE && process.env.REVIEWER_AMC_OTP) {
+    map[process.env.REVIEWER_AMC_PHONE] = {
+      otp: process.env.REVIEWER_AMC_OTP,
+      role: 'customer',
+      name: 'AMC Demo',
+      autoAmc: process.env.REVIEWER_AMC_PLAN || 'quarterly',
+    };
+  }
   return map;
 };
+
+// Lazily attach an active AMC contract to a user. Idempotent: skips if the
+// user already has any active contract. Used by the bypass flow above when
+// `autoAmc` is set on the entry.
+async function ensureAmcContract(user_id, planType) {
+  const { query } = require('../../config/db');
+  // If they already have an active contract, leave it alone.
+  const { rows: existing } = await query(
+    `SELECT id FROM amc_contracts
+       WHERE customer_id = $1 AND status = 'active' AND end_date > NOW()
+       LIMIT 1`,
+    [user_id]
+  );
+  if (existing[0]) return existing[0].id;
+
+  const today = new Date();
+  const endDate = new Date(today);
+  endDate.setFullYear(endDate.getFullYear() + 1);
+  // Demo pricing — round numbers for screenshot polish.
+  const amountByPlan = {
+    one_time:    350000,
+    half_yearly: 630000,
+    quarterly:   1260000,
+    monthly:     5000000,
+  };
+  const amount = amountByPlan[planType] || amountByPlan.quarterly;
+
+  const { rows } = await query(
+    `INSERT INTO amc_contracts
+       (customer_id, plan_type, start_date, end_date, status,
+        amount_paise, payment_status, tank_ids)
+     VALUES ($1, $2, $3::date, $4::date, 'active', $5, 'paid', '[]'::jsonb)
+     RETURNING id`,
+    [user_id, planType, today.toISOString().slice(0, 10), endDate.toISOString().slice(0, 10), amount]
+  );
+  return rows[0].id;
+}
 
 const AuthService = {
 
@@ -82,6 +130,13 @@ const AuthService = {
           role: entry.role,
           name: entry.name,
         });
+      }
+      // If the bypass entry asks for an auto-AMC, make sure this user has an
+      // active contract. Fire-and-forget so a failure here never blocks login.
+      if (entry.autoAmc) {
+        ensureAmcContract(user.id, entry.autoAmc)
+          .then((id) => console.log(`📜 AMC demo contract ensured: ${id} for ${phone}`))
+          .catch((e) => console.warn('[auto-amc] failed:', e?.message));
       }
       if (fcmToken) {
         await AuthRepository.updateFcmToken(user.id, fcmToken);

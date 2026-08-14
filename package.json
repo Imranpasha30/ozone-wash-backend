@@ -8,7 +8,9 @@
     "predev": "npx -y kill-port 3100",
     "dev": "nodemon --signal SIGTERM --delay 200ms src/server.js",
     "migrate": "node scripts/migrate.js",
-    "migrate:status": "node scripts/migrate.js status"
+    "migrate:status": "node scripts/migrate.js status",
+    "test": "node --test",
+    "verify:gates": "node scripts/verify-gates.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1015.0",
@@ -19,6 +21,7 @@
     "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
+    "exifr": "^7.1.3",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
     "express-validator": "^7.0.1",

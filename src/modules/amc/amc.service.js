@@ -1,4 +1,5 @@
 const AmcRepository = require('./amc.repository');
+const PricingService = require('../../services/pricing');
 
 // AMC plan durations in months
 const PLAN_DURATIONS = {
@@ -22,22 +23,47 @@ const PLAN_PRICES = {
 
 const AmcService = {
 
-  // Create a new AMC contract
+  // Create a new AMC contract.
+  //
+  // V2 (spec-driven): when tank_size_litres is supplied, the contract amount
+  // comes from the pricing matrix — annual invoice = per-tank rate × tanks ×
+  // services/year (GST-inclusive). The contract always spans 12 months.
+  // Legacy fallback: hard-coded PLAN_PRICES when no tank size is given.
   createContract: async (customerId, data) => {
     // Validate plan type
     if (!PLAN_DURATIONS[data.plan_type]) {
       throw { status: 400, message: 'Invalid plan type.' };
     }
 
-    // Calculate end date based on plan duration
+    const litres = Number(data.tank_size_litres);
+    const tankCount = Math.max(1, parseInt(data.tank_count, 10) || 1);
+    const matrixPlan = PricingService.normalizePlan(data.plan_type);
+    const useMatrix = Number.isFinite(litres) && litres > 0 && !!matrixPlan;
+
+    let amountPaise = PLAN_PRICES[data.plan_type];
+    let servicesPerYear = null;
+    let durationMonths = PLAN_DURATIONS[data.plan_type];
+
+    if (useMatrix) {
+      const quote = await PricingService.quoteInvoice({
+        tanks: Array(tankCount).fill(litres),
+        plan: matrixPlan,
+        addon_codes: [],
+      });
+      amountPaise = quote.annual_service_total_paise;
+      servicesPerYear = quote.services_per_year;
+      durationMonths = 12; // AMC = annual contract of N services (spec §4)
+    }
+
     const startDate = new Date(data.start_date || Date.now());
     const endDate = new Date(startDate);
-    endDate.setMonth(endDate.getMonth() + PLAN_DURATIONS[data.plan_type]);
+    endDate.setMonth(endDate.getMonth() + durationMonths);
 
     // Default SLA terms
     const slaTerms = data.sla_terms || {
       response_hrs: 24,
       cleaning_freq: PLAN_DURATIONS[data.plan_type],
+      services_per_year: servicesPerYear || undefined,
       incident_resolution_hrs: 48,
     };
 
@@ -48,9 +74,13 @@ const AmcService = {
       sla_terms: slaTerms,
       start_date: startDate,
       end_date: endDate,
-      amount_paise: PLAN_PRICES[data.plan_type],
+      amount_paise: amountPaise,
       status: 'pending_payment',
       payment_status: 'pending',
+      tank_size_litres: useMatrix ? litres : null,
+      tank_count: tankCount,
+      services_per_year: servicesPerYear,
+      source: data.source || 'standalone',
     });
 
     return contract;

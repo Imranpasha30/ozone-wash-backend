@@ -127,6 +127,29 @@ router.post(
       const certId = req.body.certId || req.query.certId;
 
       const key = resolveKey({ folder, jobId, phone, certId, originalName: file.originalname });
+
+      // EXIF authenticity check (spec §4): live-camera photos carry a creation
+      // timestamp — when EXIF is present and older than 10 minutes, reject as a
+      // stale/gallery image. Missing EXIF (picker-stripped) is accepted but
+      // flagged so the audit trail records verification status.
+      let exifVerified = false;
+      let exifTakenAt = null;
+      let exifGps = null;
+      try {
+        const exifr = require('exifr');
+        const exif = await exifr.parse(file.buffer, { gps: true, pick: ['DateTimeOriginal', 'CreateDate', 'latitude', 'longitude'] });
+        const taken = exif?.DateTimeOriginal || exif?.CreateDate;
+        if (taken) {
+          exifTakenAt = new Date(taken).toISOString();
+          const ageMin = (Date.now() - new Date(taken).getTime()) / 60000;
+          if (ageMin > 10) {
+            return sendError(res, `Photo rejected: EXIF timestamp is ${Math.round(ageMin)} min old — capture a live photo, gallery images are not allowed.`, 400);
+          }
+          exifVerified = true;
+        }
+        if (exif?.latitude && exif?.longitude) exifGps = { lat: exif.latitude, lng: exif.longitude };
+      } catch (_) { /* unparseable EXIF — treated as unverified */ }
+
       const result = await uploadBuffer(file.buffer, { key, contentType: file.mimetype });
 
       return sendSuccess(res, {
@@ -134,6 +157,9 @@ router.post(
         key: result.key,
         size: file.size,
         mimetype: file.mimetype,
+        exif_verified: exifVerified,
+        exif_taken_at: exifTakenAt,
+        exif_gps: exifGps,
       }, 'File uploaded successfully');
     } catch (err) {
       next(err);

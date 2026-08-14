@@ -451,6 +451,12 @@ async function startStep(crewId, jobId, stepNumber) {
   });
 
   // Notify customer on each step start (especially the safety-critical fogging step).
+  NotificationService.notifyUser(
+    { id: job.customer_id },
+    stepNumber === 6 ? '🌫️ Cabin fogging started' : `🚗 ${stepMeta.name} started`,
+    `Wash step ${stepNumber} of 6 is underway on your vehicle.`,
+    { job_id: jobId, type: 'wash_step', step: String(stepNumber) },
+  ).catch(() => {});
   _safeLookupCustomer(job.customer_id).then((customer) => {
     if (!customer?.phone) return;
     if (stepNumber === 6) {
@@ -498,6 +504,14 @@ async function endStep(crewId, jobId, stepNumber, body) {
     notes: body.notes,
     passed_validation: true,
   });
+
+  NotificationService.notifyUser(
+    { id: job.customer_id },
+    `✅ Wash step ${stepNumber} of 6 complete`,
+    'Track live progress in your booking.',
+    { job_id: jobId, type: 'wash_step', step: String(stepNumber) },
+  ).catch(() => {});
+
   return row;
 }
 

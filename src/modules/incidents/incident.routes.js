@@ -3,6 +3,24 @@ const { body, query } = require('express-validator');
 const IncidentController = require('./incident.controller');
 const { authenticate, requireRole } = require('../../middleware/auth.middleware');
 
+/**
+ * @swagger
+ * tags:
+ *   name: Incidents,
+ *   description: >
+ *     Field incident reporting with severity, photos, voice notes; critical incidents auto-pause the job until admin resume.
+ *
+ * Endpoints in this module:
+ *   POST  /
+ *   GET   /job/:jobId
+ *   GET   /
+ *   GET   /:id
+ *   PATCH /:id/resolve
+ *   PATCH /:id/escalate
+ *   PATCH /jobs/:jobId/resume
+ */
+
+
 const router = express.Router();
 
 // ── Validation rules ──────────────────────────────────────────────────────────
@@ -58,5 +76,14 @@ router.get('/:id', authenticate, IncidentController.getById);
 // Admin actions
 router.patch('/:id/resolve', authenticate, requireRole('admin'), IncidentController.resolve);
 router.patch('/:id/escalate', authenticate, requireRole('admin'), IncidentController.escalate);
+
+// Admin resumes a job auto-paused by a critical incident
+router.patch('/jobs/:jobId/resume', authenticate, requireRole('admin'), async (req, res, next) => {
+  try {
+    const IncidentService = require('./incident.service');
+    const out = await IncidentService.resumeJob(req.params.jobId);
+    res.json({ success: true, message: 'Job resumed', data: out });
+  } catch (err) { next(err); }
+});
 
 module.exports = router;

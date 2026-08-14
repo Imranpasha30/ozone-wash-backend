@@ -127,7 +127,16 @@ const logStepValidation = [
     .isUUID().withMessage('Job ID must be a valid UUID'),
   body('step_number')
     .notEmpty().withMessage('Step number is required')
-    .isInt({ min: 1, max: 8 }).withMessage('Step number must be between 1 and 8'),
+    .isInt({ min: 0, max: 8 }).withMessage('Step number must be between 0 and 8'),
+  body('volume_drained_litres')
+    .optional()
+    .isInt({ min: 0, max: 500000 }).withMessage('Drained volume must be 0–500,000 litres'),
+  body('water_before_litres')
+    .optional()
+    .isInt({ min: 0 }).withMessage('Water level must be a positive number'),
+  body('water_after_litres')
+    .optional()
+    .isInt({ min: 0 }).withMessage('Water level must be a positive number'),
   body('gps_lat')
     .notEmpty().withMessage('GPS latitude is required')
     .isFloat({ min: -90, max: 90 }).withMessage('Invalid latitude'),

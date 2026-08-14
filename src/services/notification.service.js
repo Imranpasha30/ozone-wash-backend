@@ -26,6 +26,35 @@ const getFirebaseAdmin = () => {
 
 const NotificationService = {
 
+  // ── In-app notification feed ──────────────────────────────────────────
+  // Persists a row the Notifications screen polls over REST — works on web
+  // where FCM is unavailable. Never throws (feed writes must not break the
+  // business action that triggered them).
+  sendInApp: async (userId, title, body, data = {}) => {
+    if (!userId) return { success: false, reason: 'no_user' };
+    try {
+      const db = require('../config/db');
+      await db.query(
+        `INSERT INTO in_app_notifications (user_id, title, body, data)
+         VALUES ($1, $2, $3, $4)`,
+        [userId, title, body || '', JSON.stringify(data || {})]
+      );
+      return { success: true };
+    } catch (err) {
+      console.error('in-app notification error:', err.message);
+      return { success: false, error: err.message };
+    }
+  },
+
+  // Push + in-app feed in one call. `user` needs { id, fcm_token } — either
+  // may be missing (web users have no token; some queries only join the token).
+  notifyUser: async (user, title, body, data = {}) => {
+    await Promise.allSettled([
+      NotificationService.sendInApp(user?.id, title, body, data),
+      NotificationService.sendPush(user?.fcm_token, title, body, data),
+    ]);
+  },
+
   // ── FCM Push Notification ─────────────────────────────────────────────
   sendPush: async (fcmToken, title, body, data = {}) => {
     try {
@@ -89,13 +118,27 @@ const NotificationService = {
             Authorization: `Bearer ${process.env.WHATSAPP_API_KEY}`,
             'Content-Type': 'application/json',
           },
+          // Hard cap — a hanging BSP endpoint must never stall API requests
+          // (Windows TCP gives up after ~4 min without this).
+          timeout: 10000,
         }
       );
 
       return { success: true, data: response.data };
     } catch (err) {
       console.error('WhatsApp error:', err.message);
-      return { success: false, error: err.message };
+      // Offline/queue guarantee (spec §1/§12): a failed transactional send is
+      // queued and retried by the daily cron instead of being dropped.
+      try {
+        const db = require('../config/db');
+        await db.query(
+          `INSERT INTO scheduled_notifications (type, customer_id, due_date, payload)
+           SELECT 'whatsapp_retry', u.id, CURRENT_DATE, $2::jsonb
+             FROM users u WHERE u.phone = $1 LIMIT 1`,
+          [String(phone).replace(/^91/, ''), JSON.stringify({ phone, template: templateName, params })]
+        );
+      } catch (_) { /* queue table unavailable — logged error above stands */ }
+      return { success: false, error: err.message, queued: true };
     }
   },
 
@@ -145,7 +188,7 @@ const NotificationService = {
             flash: '0',
             numbers: cleanPhone,
           },
-          { headers: { authorization: process.env.SMS_API_KEY } }
+          { headers: { authorization: process.env.SMS_API_KEY }, timeout: 10000 }
         );
         return { success: true, data: response.data };
 
@@ -161,6 +204,7 @@ const NotificationService = {
               authkey: process.env.SMS_API_KEY,
               'Content-Type': 'application/json',
             },
+            timeout: 10000,
           }
         );
         return { success: true, data: response.data };
@@ -171,7 +215,7 @@ const NotificationService = {
           sender: process.env.SMS_SENDER_ID,
           to: cleanPhone,
           message,
-        });
+        }, { timeout: 10000 });
         return { success: true, data: response.data };
       }
     } catch (err) {
@@ -183,7 +227,19 @@ const NotificationService = {
   // ── OTP Delivery (SMS + WhatsApp combined) ────────────────────────────
   // Called by auth.service.js when sending login OTP
   sendOtp: async (phone, otpCode) => {
-    const message = `${otpCode} is your Ozone Wash OTP. Valid for 10 minutes. Do not share with anyone. -OZNWSH`;
+    // Android SMS Retriever API requires the message to start with "<#>" and
+    // end with the app's 11-character SHA-256 hash signature on its own line.
+    // The presence of <#> + the hash lets Android verify the SMS belongs to
+    // this app and silently auto-fill the OTP — no user permission, no
+    // SMS-read permission needed.
+    //
+    // Set ANDROID_SMS_HASH in .env to the value printed by `keytool` (see
+    // docs). If unset, the message falls back to the plain template (auto-
+    // fill won't engage; user still gets the OTP normally).
+    const hash = process.env.ANDROID_SMS_HASH;
+    const message = hash
+      ? `<#> ${otpCode} is your Ozone Wash OTP. Valid for 10 minutes. Do not share with anyone. -OZNWSH\n\n${hash}`
+      : `${otpCode} is your Ozone Wash OTP. Valid for 10 minutes. Do not share with anyone. -OZNWSH`;
 
     await Promise.allSettled([
       NotificationService.sendSMS(phone, message, otpCode),
@@ -238,8 +294,8 @@ const NotificationService = {
         { name: 'customer_name', value: customer.name || 'Customer' },
         { name: 'job_date', value: new Date(job.scheduled_at).toLocaleDateString('en-IN') },
       ]),
-      NotificationService.sendPush(
-        customer.fcm_token,
+      NotificationService.notifyUser(
+        customer,
         '✅ Booking Confirmed!',
         `Your tank cleaning is scheduled for ${new Date(job.scheduled_at).toLocaleDateString('en-IN')}`,
         { job_id: job.id, type: 'booking_confirmed' }
@@ -249,8 +305,8 @@ const NotificationService = {
 
   // 2. Field team assigned
   onTeamAssigned: async (teamMember, job) => {
-    await NotificationService.sendPush(
-      teamMember.fcm_token,
+    await NotificationService.notifyUser(
+      teamMember,
       '🔧 New Job Assigned',
       `You have a new job on ${new Date(job.scheduled_at).toLocaleDateString('en-IN')}`,
       { job_id: job.id, type: 'job_assigned' }
@@ -259,8 +315,8 @@ const NotificationService = {
 
   // 3. Job started
   onJobStarted: async (customer, job) => {
-    await NotificationService.sendPush(
-      customer.fcm_token,
+    await NotificationService.notifyUser(
+      customer,
       '🚿 Cleaning Started!',
       'Our team has started cleaning your tank.',
       { job_id: job.id, type: 'job_started' }
@@ -269,8 +325,8 @@ const NotificationService = {
 
   // 4. Compliance step completed
   onStepCompleted: async (customer, stepName, jobId) => {
-    await NotificationService.sendPush(
-      customer.fcm_token,
+    await NotificationService.notifyUser(
+      customer,
       `✓ ${stepName} Complete`,
       'Your cleaning is in progress.',
       { job_id: jobId, type: 'step_completed' }
@@ -288,8 +344,8 @@ const NotificationService = {
         { name: 'cert_url', value: cert.certificate_url },
         { name: 'eco_score', value: String(cert.eco_score) },
       ]),
-      NotificationService.sendPush(
-        customer.fcm_token,
+      NotificationService.notifyUser(
+        customer,
         '🏆 Certificate Ready!',
         `Your hygiene certificate is ready. EcoScore: ${cert.eco_score}`,
         { cert_id: cert.id, type: 'certificate_ready' }

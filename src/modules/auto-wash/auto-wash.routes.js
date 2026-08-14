@@ -16,6 +16,36 @@ const router = express.Router();
 /* ── Validation helpers ───────────────────────────────────────────────── */
 const validate = (req, res, next) => {
   const { validationResult } = require('express-validator');
+
+/**
+ * @swagger
+ * tags:
+ *   name: AutoWash,
+ *   description: >
+ *     Car wash product line — separate from tank cleaning (packages, vehicles, jobs, certificates).
+ *
+ * Endpoints in this module:
+ *   GET   /packages
+ *   GET   /addons
+ *   GET   /subscription-plans
+ *   POST  /quote
+ *   GET   /verify/:qr_token
+ *   POST  /vehicles
+ *   DELETE/vehicles/:id
+ *   POST  /bookings
+ *   GET   /bookings/history
+ *   GET   /bookings/:id
+ *   POST  /subscriptions
+ *   GET   /subscriptions/active
+ *   PUT   /subscriptions/:id/pause
+ *   PUT   /subscriptions/:id/cancel
+ *   GET   /jobs/today
+ *   POST  /jobs/:id/pre-inspection
+ *   POST  /jobs/:id/steps/:step_no/start
+ *   POST  /jobs/:id/steps/:step_no/end
+ *   POST  /jobs/:id/complete
+ */
+
   const errs = validationResult(req);
   if (!errs.isEmpty()) return sendError(res, 'Validation failed', 400, errs.array());
   next();

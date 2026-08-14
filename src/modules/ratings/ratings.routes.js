@@ -13,6 +13,19 @@ const { sendSuccess, sendError } = require('../../utils/response');
 const db = require('../../config/db');
 const EcoScoreService = require('../ecoscore/ecoscore.service');
 
+/**
+ * @swagger
+ * tags:
+ *   name: Ratings,
+ *   description: >
+ *     Customer star ratings per completed job; feeds agent KPIs and incentives.
+ *
+ * Endpoints in this module:
+ *   POST  /
+ *   GET   /job/:jobId
+ */
+
+
 const router = express.Router();
 
 const validation = [

@@ -23,7 +23,8 @@ const JobRepository = {
       `SELECT j.*, j.end_otp_satisfied, j.end_otp_unsatisfied, j.customer_satisfied,
         c.name as customer_name, c.phone as customer_phone, c.fcm_token as customer_fcm_token,
         t.name as team_name, t.phone as team_phone, t.fcm_token as team_fcm_token,
-        b.address, b.tank_type, b.tank_size_litres, b.addons, b.amount_paise,
+        b.address, b.lat AS booking_lat, b.lng AS booking_lng,
+        b.tank_type, b.tank_size_litres, b.addons, b.amount_paise,
         b.amc_plan, b.property_type, b.contact_name, b.contact_phone
        FROM jobs j
        JOIN users c ON c.id = j.customer_id
@@ -199,6 +200,67 @@ const JobRepository = {
       `SELECT id, name, phone FROM users WHERE role = 'field_team'`
     );
     return result.rows;
+  },
+
+  // Live in-app alerts for a customer's active jobs (OTP requested / crew
+  // departed). Drives the tappable banners on the customer home screen.
+  customerAlerts: async (customerId) => {
+    const result = await db.query(
+      `SELECT j.id AS job_id, j.booking_id, j.scheduled_at, j.job_type,
+              j.start_otp, j.start_otp_verified, j.departure_time, j.status,
+              b.tank_type AS b_tank_type, b.tank_size_litres AS b_litres,
+              b.tanks AS b_tanks, b.address AS b_address,
+              v.vehicle_type, v.registration_number
+         FROM jobs j
+         LEFT JOIN bookings b ON b.id = j.booking_id
+         LEFT JOIN vehicles v ON v.id = j.vehicle_id
+        WHERE j.customer_id = $1
+          AND j.status = 'scheduled'
+          AND (j.start_otp IS NOT NULL OR j.departure_time IS NOT NULL)
+        ORDER BY j.scheduled_at ASC
+        LIMIT 5`,
+      [customerId]
+    );
+    const alerts = [];
+    for (const j of result.rows) {
+      // Human job label so customers with several bookings know WHICH job
+      // the alert refers to (e.g. "Overhead Tank · 15,000 L" / "Car Wash ·
+      // HATCHBACK TS09AB1234") + when/where.
+      let label;
+      if (j.job_type === 'auto_wash') {
+        label = `Car Wash${j.vehicle_type ? ` · ${String(j.vehicle_type).toUpperCase()}` : ''}${j.registration_number ? ` ${j.registration_number}` : ''}`;
+      } else {
+        const tankCount = Array.isArray(j.b_tanks) && j.b_tanks.length > 1 ? ` × ${j.b_tanks.length} tanks` : '';
+        label = `${(j.b_tank_type || 'Tank').replace(/_/g, ' ')} tank${tankCount}${j.b_litres ? ` · ${Number(j.b_litres).toLocaleString('en-IN')} L` : ''}`;
+        label = label.charAt(0).toUpperCase() + label.slice(1);
+      }
+      const when = new Date(j.scheduled_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      const where = j.b_address ? ` · ${String(j.b_address).split(',')[0].slice(0, 28)}` : '';
+      const context = `${label} · ${when}${where}`;
+
+      if (j.start_otp && !j.start_otp_verified) {
+        alerts.push({
+          type: 'otp_requested',
+          job_id: j.job_id,
+          booking_id: j.booking_id,
+          job_type: j.job_type,
+          scheduled_at: j.scheduled_at,
+          context,
+          message: 'Technician requested your Start OTP — tap to view it',
+        });
+      } else if (j.departure_time && !j.start_otp_verified) {
+        alerts.push({
+          type: 'crew_departed',
+          job_id: j.job_id,
+          booking_id: j.booking_id,
+          job_type: j.job_type,
+          scheduled_at: j.scheduled_at,
+          context,
+          message: 'Your OzoneWash crew has departed and is on the way',
+        });
+      }
+    }
+    return alerts;
   },
 
   getTodayStats: async (teamId = null) => {

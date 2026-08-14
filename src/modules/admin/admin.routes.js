@@ -309,4 +309,47 @@ router.post('/pricing/freeze', adminOnly, async (req, res, next) => {
   }
 });
 
+/**
+ * @swagger
+ * /admin/settings/{key}:
+ *   get:
+ *     summary: Read an app setting (e.g. water_thresholds for BIS gates)
+ *     tags: [Admin]
+ *     security: [{ bearerAuth: [] }]
+ *   put:
+ *     summary: Update an app setting — water-quality thresholds take effect within 60s
+ *     tags: [Admin]
+ *     security: [{ bearerAuth: [] }]
+ */
+router.get('/settings/:key', adminOnly, async (req, res, next) => {
+  try {
+    const db = require('../../config/db');
+    const { rows } = await db.query(`SELECT key, value, updated_at FROM app_settings WHERE key = $1`, [req.params.key]);
+    if (!rows.length) return res.status(404).json({ success: false, message: 'Setting not found.' });
+    return sendSuccess(res, { setting: rows[0] });
+  } catch (err) { next(err); }
+});
+
+router.put('/settings/:key', adminOnly, async (req, res, next) => {
+  try {
+    const db = require('../../config/db');
+    if (!req.body || typeof req.body.value !== 'object') {
+      return res.status(400).json({ success: false, message: 'Body must be { value: {...} }.' });
+    }
+    const { rows } = await db.query(
+      `INSERT INTO app_settings (key, value, updated_by, updated_at)
+       VALUES ($1, $2::jsonb, $3, NOW())
+       ON CONFLICT (key) DO UPDATE SET value = $2::jsonb, updated_by = $3, updated_at = NOW()
+       RETURNING key, value, updated_at`,
+      [req.params.key, JSON.stringify(req.body.value), req.user?.phone || req.user?.id || 'admin']
+    );
+    // Bust the relevant setting caches so changes apply immediately.
+    try { require('../field-ops/field-ops.service').invalidateThresholds(); } catch (_) {}
+    if (req.params.key === 'scheduling') {
+      try { require('../../services/scheduling.service').invalidate(); } catch (_) {}
+    }
+    return sendSuccess(res, { setting: rows[0] }, 'Setting updated');
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

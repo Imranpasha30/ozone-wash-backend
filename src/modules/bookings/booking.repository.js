@@ -13,8 +13,9 @@ const BookingRepository = {
         customer_id, tank_type, tank_size_litres, tanks, address, lat, lng,
         slot_time, addons, amc_plan, payment_method, amount_paise,
         property_type, contact_name, contact_phone,
-        job_type, resource_type, status
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+        job_type, resource_type, status,
+        plan, amc_contract_id, pricing
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
       RETURNING *`,
       [
         data.customer_id, data.tank_type, data.tank_size_litres,
@@ -27,6 +28,9 @@ const BookingRepository = {
         data.contact_phone || null,
         'tank_cleaning', 'tank',
         'confirmed',
+        data.plan || 'one_time',
+        data.amc_contract_id || null,
+        data.pricing ? JSON.stringify(data.pricing) : null,
       ]
     );
     return result.rows[0];

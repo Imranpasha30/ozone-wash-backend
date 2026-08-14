@@ -2,6 +2,26 @@ const express = require('express');
 const Controller = require('./teams.controller');
 const { authenticate, requireRole } = require('../../middleware/auth.middleware');
 
+/**
+ * @swagger
+ * tags:
+ *   name: Teams,
+ *   description: >
+ *     Field team management — create teams, assign leaders, manage member shares.
+ *
+ * Endpoints in this module:
+ *   GET   /me
+ *   POST  /
+ *   GET   /
+ *   GET   /:id
+ *   PATCH /:id
+ *   DELETE/:id
+ *   POST  /:id/members
+ *   DELETE/:id/members/:agentId
+ *   PATCH /:id/members/:agentId/share
+ */
+
+
 const router = express.Router();
 
 // Field-team-facing — agent can see which team they belong to.

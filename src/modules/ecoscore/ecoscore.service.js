@@ -383,25 +383,65 @@ const EcoScoreService = {
       customer_feedback,
     };
 
-    const totalScore = Math.min(100, Math.max(0,
-      water_level + timely_service + ozone_protocol + uv_used +
-      addons + water_test_passed + improvement + streak + customer_feedback
-    ));
-    const badgeLevel = EcoScoreService.getBadgeLevel(totalScore);
-    const rationale = buildJobRationale(badgeLevel, breakdown);
-    breakdown.rationale = rationale; // surfaced in tooltip via score_breakdown
-
-    // Persist to per-job snapshot (eco_metrics_log).
-    // Legacy columns water_used_litres / chemical_qty_ml / ppe_list /
-    // residual_water_before are kept for backward compatibility with old rows.
+    // ── SPEC FORMULA (Handout §9.1) — this IS the certificate score ──────
+    //   eco_score = water_efficiency*0.40 + chemical*0.30 + ppe*0.15 + offpeak*0.15
+    //   Grade: GOLD >= 80 | SILVER >= 60 | BRONZE >= 40 | else below standard.
+    //   ORP modifier: after-ORP below target → grade capped at SILVER.
     const ppeArray = Array.isArray(steps[0]?.ppe_list)
       ? steps[0].ppe_list
       : (typeof steps[0]?.ppe_list === 'string' ? JSON.parse(steps[0].ppe_list || '[]') : []);
 
+    // Water efficiency: actual pressure-wash litres vs a conventional-clean benchmark
+    const stage4 = steps.find((s) => s.step_number === 4);
+    const usedLitres = Number(stage4?.water_used_litres);
+    const tankL = Number(job.tank_capacity_litres || job.tank_size_litres) || 5000;
+    const benchmark = tankL <= 1000 ? 150 : tankL <= 2000 ? 250 : tankL <= 5000 ? 500
+      : tankL <= 10000 ? 900 : tankL <= 25000 ? 2000 : tankL <= 50000 ? 3500 : 6000;
+    const water_efficiency = Number.isFinite(usedLitres)
+      ? Math.min(1, Math.max(0, 1 - usedLitres / benchmark))
+      : 0.6; // no litres data (legacy job) — modest default
+
+    // Chemical score: ozone job = 1.0; anti-algae add-on used = 0.5
+    let chemical_score = 1.0;
+    try {
+      const { rows: bk } = await require('../../config/db').query(
+        `SELECT b.addons FROM bookings b JOIN jobs j ON j.booking_id = b.id WHERE j.id = $1`, [jobId]
+      );
+      const jobAddons = Array.isArray(bk[0]?.addons) ? bk[0].addons : [];
+      if (jobAddons.includes('anti_algae') || jobAddons.includes('lime_treatment') || jobAddons.includes('anti_lime')) chemical_score = 0.5;
+    } catch (_) {}
+
+    const ppe_score = Math.min(1, ppeArray.length / 6);
+
+    const hr = new Date(job.scheduled_at).getHours();
+    const offpeak_bonus = ((hr >= 7 && hr < 9) || (hr >= 13 && hr < 15)) ? 1.0
+      : ((hr >= 9 && hr < 11) || (hr >= 15 && hr < 17)) ? 0.5 : 0.0;
+
+    let totalScore = Math.round(
+      water_efficiency * 40 + chemical_score * 30 + ppe_score * 15 + offpeak_bonus * 15
+    );
+    totalScore = Math.min(100, Math.max(0, totalScore));
+
+    let badgeLevel = totalScore >= 80 ? 'gold' : totalScore >= 60 ? 'silver' : 'bronze';
+    if (job.orp_gate_failed && badgeLevel === 'gold') {
+      badgeLevel = 'silver'; // ozone effectiveness not confirmed → no Gold
+    }
+
+    // Spec dimensions first; the legacy 9-dimension detail stays for dashboards.
+    Object.assign(breakdown, {
+      water_efficiency: Math.round(water_efficiency * 40),
+      chemical_score: Math.round(chemical_score * 30),
+      ppe_score: Math.round(ppe_score * 15),
+      offpeak_bonus: Math.round(offpeak_bonus * 15),
+      orp_capped: !!job.orp_gate_failed,
+    });
+    const rationale = buildJobRationale(badgeLevel, breakdown);
+    breakdown.rationale = rationale; // surfaced in tooltip via score_breakdown
+
     await EcoScoreRepository.save({
       job_id: jobId,
       residual_water_before: 0,
-      water_used_litres: 0,
+      water_used_litres: Number.isFinite(usedLitres) ? usedLitres : 0,
       chemical_type: 'ozone',
       chemical_qty_ml: 0,
       ppe_list: ppeArray,

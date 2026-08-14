@@ -11,6 +11,20 @@ const { body } = require('express-validator');
 const RewardsController = require('./rewards.controller');
 const { authenticate } = require('../../middleware/auth.middleware');
 
+/**
+ * @swagger
+ * tags:
+ *   name: Rewards,
+ *   description: >
+ *     EcoPoints rewards and redemptions.
+ *
+ * Endpoints in this module:
+ *   GET   /
+ *   GET   /me
+ *   POST  /redeem
+ */
+
+
 const router = express.Router();
 
 const redeemValidation = [

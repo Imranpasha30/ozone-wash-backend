@@ -21,6 +21,10 @@ const teamsRoutes = require('../modules/teams/teams.routes');
 const { meRouter: incentiveMeRouter } = require('../modules/incentives/routes');
 const ratingRoutes = require('../modules/ratings/ratings.routes');
 const rewardRoutes = require('../modules/rewards/rewards.routes');
+const addressRoutes = require('../modules/addresses/address.routes');
+const funnelRoutes = require('../modules/funnel/funnel.routes');
+const fieldOpsRoutes = require('../modules/field-ops/field-ops.routes');
+const notificationRoutes = require('./notification.routes');
 
 router.use('/auth', authRoutes);
 router.use('/admin-auth', adminAuthRoutes);
@@ -42,6 +46,10 @@ router.use('/admin/alerts', adminAlertsRoutes);
 router.use('/teams', teamsRoutes);
 router.use('/ratings', ratingRoutes);
 router.use('/rewards', rewardRoutes);
+router.use('/addresses', addressRoutes);
+router.use('/funnel', funnelRoutes);
+router.use('/field', fieldOpsRoutes);
+router.use('/notifications', notificationRoutes);
 
 
 router.get('/health', (req, res) => {

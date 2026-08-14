@@ -48,14 +48,19 @@ const ComplianceRepository = {
         rinse_duration, disposal_status,
         ozone_cycle_duration, ozone_ppm_dosed,
         uv_cycle_duration, uv_dose, uv_lumines_status, uv_skipped,
-        client_signature_url, technician_remarks
+        client_signature_url, technician_remarks,
+        volume_drained_litres, water_before_litres, water_after_litres,
+        water_used_litres, cleanup_checklist,
+        extra_photo_urls, video_url, confined_entry, harness_attached
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
         $11,$12,$13,$14,$15,$16,$17,
         $18,$19,$20,$21,$22,$23,$24,
         $25,$26,$27,$28,$29,$30,
         $31,$32,$33,$34,$35,$36,$37,
-        $38,$39,$40,$41,$42,$43
+        $38,$39,$40,$41,$42,$43,
+        $44,$45,$46,$47,$48,
+        $49,$50,$51,$52
       )
       ON CONFLICT (job_id, step_number)
       DO UPDATE SET
@@ -97,6 +102,15 @@ const ComplianceRepository = {
         uv_skipped = $41,
         client_signature_url = $42,
         technician_remarks = $43,
+        volume_drained_litres = COALESCE($44, compliance_logs.volume_drained_litres),
+        water_before_litres = COALESCE($45, compliance_logs.water_before_litres),
+        water_after_litres = COALESCE($46, compliance_logs.water_after_litres),
+        water_used_litres = COALESCE($47, compliance_logs.water_used_litres),
+        cleanup_checklist = COALESCE($48, compliance_logs.cleanup_checklist),
+        extra_photo_urls = COALESCE($49, compliance_logs.extra_photo_urls),
+        video_url = COALESCE($50, compliance_logs.video_url),
+        confined_entry = COALESCE($51, compliance_logs.confined_entry),
+        harness_attached = COALESCE($52, compliance_logs.harness_attached),
         logged_at = NOW()
       RETURNING *`,
       [
@@ -152,8 +166,28 @@ const ComplianceRepository = {
         // Step 8
         data.client_signature_url || null,
         data.technician_remarks || null,
+        // SOP v2 — numeric litres + site clean-up (migration 021)
+        Number.isFinite(Number(data.volume_drained_litres)) ? Math.floor(Number(data.volume_drained_litres)) : null,
+        Number.isFinite(Number(data.water_before_litres)) ? Math.floor(Number(data.water_before_litres)) : null,
+        Number.isFinite(Number(data.water_after_litres)) ? Math.floor(Number(data.water_after_litres)) : null,
+        Number.isFinite(Number(data.water_used_litres)) ? Math.floor(Number(data.water_used_litres)) : null,
+        data.cleanup_checklist ? JSON.stringify(data.cleanup_checklist) : null,
+        // SOP v2 finish — 3-photo visual docs + confined-space scrub (migration 022)
+        Array.isArray(data.extra_photo_urls) ? JSON.stringify(data.extra_photo_urls) : null,
+        data.video_url || null,
+        typeof data.confined_entry === 'boolean' ? data.confined_entry : null,
+        typeof data.harness_attached === 'boolean' ? data.harness_attached : null,
       ]
     );
+
+    // Append-only audit shadow (spec §13) — every save is recorded immutably,
+    // even though compliance_logs itself upserts.
+    db.query(
+      `INSERT INTO compliance_log_revisions (job_id, step_number, agent_id, snapshot)
+       VALUES ($1, $2, $3, $4::jsonb)`,
+      [data.job_id, data.step_number, data.agent_id || null, JSON.stringify(result.rows[0])]
+    ).catch(() => {});
+
     return result.rows[0];
   },
 

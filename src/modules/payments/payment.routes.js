@@ -85,6 +85,10 @@ router.post('/create-order', authenticate, requireRole('customer'), PaymentContr
 router.post('/verify', authenticate, requireRole('customer'), PaymentController.verifyPayment);
 router.post('/refund', authenticate, requireRole('admin'), PaymentController.refundPayment);
 
+// Easebuzz surl/furl target — hit by the Easebuzz checkout (server-to-browser
+// form POST, no JWT possible). Signature-verified inside the handler.
+router.post('/easebuzz/callback', PaymentController.easebuzzCallback);
+
 // AMC payment routes
 router.post('/amc/create-order', authenticate, requireRole('customer'), PaymentController.createAmcOrder);
 router.post('/amc/verify', authenticate, requireRole('customer'), PaymentController.verifyAmcPayment);

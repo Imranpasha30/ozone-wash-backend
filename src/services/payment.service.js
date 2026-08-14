@@ -1,117 +1,84 @@
-const crypto = require('crypto');
+/**
+ * Payment service — gateway-agnostic facade.
+ *
+ * The client hasn't finalized Razorpay vs Easebuzz, so BOTH are wired in and
+ * the active one is chosen purely from .env — drop in credentials and it
+ * starts working with zero code changes:
+ *
+ *   PAYMENT_GATEWAY=razorpay | easebuzz   (optional — forces a gateway)
+ *
+ *   # Razorpay                             # Easebuzz
+ *   RAZORPAY_KEY_ID=...                    EASEBUZZ_KEY=...
+ *   RAZORPAY_KEY_SECRET=...                EASEBUZZ_SALT=...
+ *                                          EASEBUZZ_ENV=test|prod
+ *
+ * Selection order:
+ *   1. PAYMENT_GATEWAY if set to a known gateway
+ *   2. Whichever gateway has real credentials configured (razorpay first)
+ *   3. Razorpay in dev-mock mode (development only)
+ *
+ * createOrder() returns a `gateway` discriminator so the app knows which
+ * checkout UI to render (Razorpay SDK modal vs Easebuzz payment_url WebView).
+ * verifyPayment() auto-detects the gateway from the payload shape.
+ */
+const razorpay = require('./gateways/razorpay.gateway');
+const easebuzz = require('./gateways/easebuzz.gateway');
 
-// Initialize Razorpay — works with placeholder keys in development
-const getRazorpay = () => {
-  const Razorpay = require('razorpay');
-  return new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
-    key_secret: process.env.RAZORPAY_KEY_SECRET || 'placeholder_secret',
-  });
-};
+const GATEWAYS = { razorpay, easebuzz };
+
+function activeGateway() {
+  const forced = (process.env.PAYMENT_GATEWAY || '').trim().toLowerCase();
+  if (GATEWAYS[forced]) return GATEWAYS[forced];
+  if (razorpay.isConfigured()) return razorpay;
+  if (easebuzz.isConfigured()) return easebuzz;
+  return razorpay; // dev fallback — mock orders
+}
+
+/** Which gateway a verify payload belongs to, by field shape. */
+function gatewayForPayload(payload = {}) {
+  if (payload.gateway && GATEWAYS[payload.gateway]) return GATEWAYS[payload.gateway];
+  if (payload.razorpay_order_id || payload.razorpay_signature) return razorpay;
+  if (payload.txnid || payload.easepayid) return easebuzz;
+  return activeGateway();
+}
 
 const PaymentService = {
 
-  // Create Razorpay order — called when customer clicks Pay
-  createOrder: async (amountPaise, bookingId, currency = 'INR') => {
-    try {
-      const razorpay = getRazorpay();
+  /** Name of the currently-active gateway ('razorpay' | 'easebuzz'). */
+  activeGatewayName: () => activeGateway().name,
 
-      const order = await razorpay.orders.create({
-        amount: amountPaise,
-        currency,
-        receipt: `booking_${bookingId}`,
-        notes: {
-          booking_id: bookingId,
-          platform: 'ozone_wash',
-        },
-      });
-
-      return {
-        order_id: order.id,
-        amount: order.amount,
-        currency: order.currency,
-        receipt: order.receipt,
-      };
-    } catch (err) {
-      console.error('Razorpay create order error:', err.message);
-
-      // In development return mock order
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`💳 [PAYMENT DEV] Mock order for booking: ${bookingId} | Amount: ₹${amountPaise / 100}`);
-        return {
-          order_id: `order_dev_${Date.now()}`,
-          amount: amountPaise,
-          currency,
-          receipt: `booking_${bookingId}`,
-          dev: true,
-        };
-      }
-
-      throw { status: 500, message: 'Payment order creation failed.' };
-    }
+  /**
+   * Create a payment order/link.
+   *   amountPaise — GST-inclusive total
+   *   refId       — booking or contract id
+   *   customer    — { name, email, phone } (required by Easebuzz)
+   */
+  createOrder: async (amountPaise, refId, customer = {}) => {
+    return activeGateway().createOrder(amountPaise, refId, customer);
   },
 
-  // Verify Razorpay payment signature — CRITICAL security check
-  verifyPayment: (orderId, paymentId, signature) => {
-    try {
-      const secret = process.env.RAZORPAY_KEY_SECRET || 'placeholder_secret';
-      const body = `${orderId}|${paymentId}`;
-      const expectedSignature = crypto
-        .createHmac('sha256', secret)
-        .update(body)
-        .digest('hex');
-
-      const isValid = expectedSignature === signature;
-
-      if (!isValid) {
-        throw { status: 400, message: 'Payment verification failed. Invalid signature.' };
-      }
-
-      return { verified: true };
-    } catch (err) {
-      if (err.status) throw err;
-
-      // Dev mode — accept mock payments
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`💳 [PAYMENT DEV] Mock verification for order: ${orderId}`);
-        return { verified: true, dev: true };
-      }
-
-      throw { status: 400, message: 'Payment verification failed.' };
-    }
+  /**
+   * Verify a completed payment.
+   * Accepts either the legacy positional razorpay call
+   *   verifyPayment(orderId, paymentId, signature)
+   * or a single gateway payload object
+   *   verifyPayment({ razorpay_* }) / verifyPayment({ txnid, hash, ... })
+   */
+  verifyPayment: (a, b, c) => {
+    const payload = typeof a === 'object' && a !== null
+      ? a
+      : { razorpay_order_id: a, razorpay_payment_id: b, razorpay_signature: c };
+    return gatewayForPayload(payload).verifyPayment(payload);
   },
 
-  // Get payment details from Razorpay
-  getPayment: async (paymentId) => {
-    try {
-      const razorpay = getRazorpay();
-      return await razorpay.payments.fetch(paymentId);
-    } catch (err) {
-      console.error('Razorpay fetch payment error:', err.message);
-      throw { status: 404, message: 'Payment not found.' };
-    }
+  /** Refund via whichever gateway captured the payment. */
+  refundPayment: async (paymentId, amountPaise, gatewayName) => {
+    const gw = GATEWAYS[gatewayName] || activeGateway();
+    return gw.refundPayment(paymentId, amountPaise);
   },
 
-  // Refund a payment
-  refundPayment: async (paymentId, amountPaise) => {
-    try {
-      const razorpay = getRazorpay();
-      const refund = await razorpay.payments.refund(paymentId, {
-        amount: amountPaise,
-        notes: { reason: 'Customer requested refund' },
-      });
-      return refund;
-    } catch (err) {
-      console.error('Razorpay refund error:', err.message);
-
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`💳 [PAYMENT DEV] Mock refund for payment: ${paymentId}`);
-        return { id: `refund_dev_${Date.now()}`, dev: true };
-      }
-
-      throw { status: 500, message: 'Refund failed.' };
-    }
-  },
+  /** Fetch raw payment details (razorpay only). */
+  getPayment: async (paymentId) => razorpay.getPayment(paymentId),
 
 };
 

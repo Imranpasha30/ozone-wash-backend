@@ -152,6 +152,54 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', env: process.env.NODE_ENV, ts: Date.now() });
 });
 
+// ── Public certificate verify page (QR target — no auth) ─────────────────────
+// The certificate QR encodes {APP_URL}/verify/<certId>; anyone scanning gets a
+// human-readable validity page instead of raw API JSON (spec 6.2 / 9.2).
+app.get('/verify/:certId', async (req, res) => {
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  let body;
+  try {
+    const CertificateService = require('./modules/certificates/certificate.service');
+    const v = await CertificateService.verifyCertificate(req.params.certId);
+    const ok = v?.valid === true;
+    body = `
+      <div class="badge ${ok ? 'ok' : 'bad'}">${ok ? '&#10003; VALID CERTIFICATE' : '&#10007; NOT VALID'}</div>
+      <h2>Digital Hygiene Certificate</h2>
+      <table>
+        <tr><td>Certificate No</td><td>${esc(v.certificate_number || req.params.certId)}</td></tr>
+        <tr><td>Customer</td><td>${esc(v.customer_name || '—')}</td></tr>
+        <tr><td>Tank</td><td>${esc((v.tank_type || '—').toUpperCase())}</td></tr>
+        <tr><td>EcoScore</td><td>${esc(v.eco_score ?? '—')}</td></tr>
+        <tr><td>Service date</td><td>${v.service_date ? new Date(v.service_date).toLocaleDateString('en-IN') : '—'}</td></tr>
+        <tr><td>Valid until</td><td>${v.valid_until ? new Date(v.valid_until).toLocaleDateString('en-IN') : '—'}</td></tr>
+      </table>
+      ${v.certificate_url ? `<a class="btn" href="${esc(v.certificate_url)}">Download PDF</a>` : ''}`;
+  } catch (e) {
+    body = `<div class="badge bad">&#10007; CERTIFICATE NOT FOUND</div>
+      <p class="reason">${esc(e?.message || 'This certificate could not be verified.')}</p>`;
+  }
+  res.set('Content-Type', 'text/html').send(`<!doctype html>
+<html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OzoneWash — Certificate Verification</title>
+<style>
+  body{font-family:system-ui,sans-serif;background:#f4f6f9;margin:0;padding:24px;color:#16324f}
+  .card{max-width:420px;margin:6vh auto;background:#fff;border-radius:16px;padding:28px;box-shadow:0 8px 30px rgba(22,50,79,.12);text-align:center}
+  .brand{font-weight:800;letter-spacing:.5px;color:#1a1a2e;font-size:20px;margin-bottom:18px}
+  .badge{display:inline-block;padding:8px 18px;border-radius:999px;font-weight:800;font-size:14px;margin-bottom:14px}
+  .badge.ok{background:#e8f7ee;color:#16a34a}.badge.bad{background:#fdecec;color:#dc2626}
+  h2{font-size:17px;margin:6px 0 16px}
+  table{width:100%;border-collapse:collapse;font-size:14px;text-align:left}
+  td{padding:8px 4px;border-bottom:1px solid #eef1f5}td:first-child{color:#6b7280}
+  .btn{display:inline-block;margin-top:18px;background:#2563EB;color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-weight:700;font-size:14px}
+  .reason{color:#6b7280;font-size:13px}
+  .foot{margin-top:16px;font-size:11px;color:#9ca3af}
+</style></head><body><div class="card">
+  <div class="brand">OZONE WASH</div>
+  ${body}
+  <div class="foot">VijRam Health Sense Pvt. Ltd. · ozonewash.in</div>
+</div></body></html>`);
+});
+
 // ── API Routes ────────────────────────────────────────────────────────────────
 app.use('/api/v1', routes);
 

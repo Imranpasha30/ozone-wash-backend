@@ -9,12 +9,24 @@ const { sendSuccess, sendError } = require('../../utils/response');
 const BookingController = {
 
   // GET /api/v1/bookings/slots?date=2026-03-24
+  //   &tank_sizes=15000,5000&locations=2   → DYNAMIC capacity-aware slots:
+  //   duration = Σ per-tank clean minutes (admin-set, by size) + travel
+  //   buffer × (locations−1); a slot shows only while a van is free for the
+  //   whole window. Legacy fixed slots kept when no tank params are sent.
   getSlots: async (req, res, next) => {
     try {
-      const { date } = req.query;
+      const { date, tank_sizes, locations } = req.query;
       if (!date) {
         return sendError(res, 'Date is required. Format: YYYY-MM-DD', 400);
       }
+
+      if (tank_sizes) {
+        const SchedulingService = require('../../services/scheduling.service');
+        const sizes = String(tank_sizes).split(',').map(Number).filter((n) => Number.isFinite(n) && n > 0);
+        const out = await SchedulingService.slotsForDate(date, sizes, locations ? Number(locations) : null);
+        return sendSuccess(res, out);
+      }
+
       const slots = await BookingService.getAvailableSlots(date);
       return sendSuccess(res, { slots });
     } catch (err) {
@@ -34,30 +46,36 @@ const BookingController = {
       const { tank_type, tank_size_litres, addons, plan, tank_count } = req.query;
       const litres = parseFloat(tank_size_litres) || 0;
 
-      // ── New mode: explicit plan from the pricing matrix ───────────────
+      // ── New mode: full invoice quote (spec §5 master formula) ─────────
+      // ?plan=quarterly&tank_size_litres=15000&tank_count=2
+      // ?plan=quarterly&tank_sizes=15000,5000&addons=uv_sterilization,anti_lime
+      // Per-tank rates come from the admin-editable pricing matrix; add-ons
+      // from tank_addons buckets. All figures GST-inclusive.
       if (plan) {
-        const tier = await PricingService.tierForLitres(litres);
-        if (!tier) {
-          return sendError(res, 'No pricing tier matches that tank size.', 400);
-        }
-        const result = await PricingService.priceForBooking({
-          tier_id: tier.id,
+        const sizesCsv = req.query.tank_sizes;
+        const tanksList = sizesCsv
+          ? sizesCsv.split(',').map(Number).filter((n) => Number.isFinite(n) && n > 0)
+          : Array(parseInt(tank_count, 10) || 1).fill(litres);
+        const addonList = addons ? addons.split(',').filter(Boolean) : [];
+
+        const quote = await PricingService.quoteInvoice({
+          tanks: tanksList,
           plan,
-          tank_count: parseInt(tank_count, 10) || 1,
+          addon_codes: addonList,
         });
-        // Backwards-compat keys + new fields
+
         const pricing = {
-          ...result,
-          tier,
-          // Legacy keys so old clients still parse it as a "pricing" object
-          base_price: Math.round(result.total_paise / 100),
-          subtotal: Math.round(result.ex_gst_paise / 100),
-          gst: Math.round(result.gst_paise / 100),
-          grand_total: Math.round(result.total_paise / 100),
-          amount_paise: result.total_paise,
-          addon_total: 0,
-          amc_covered: plan !== 'one_time',
-          amc_plan: plan !== 'one_time' ? plan : null,
+          ...quote,
+          billing_version: 2,
+          // Legacy keys so existing clients keep parsing this as "pricing"
+          base_price: Math.round(quote.annual_service_total_paise / 100),
+          per_service_price: Math.round(quote.per_service_total_paise / 100),
+          addon_total: Math.round(quote.addons_total_paise / 100),
+          subtotal: Math.round(quote.ex_gst_paise / 100),
+          gst: Math.round(quote.gst_paise / 100),
+          grand_total: Math.round(quote.invoice_total_paise / 100),
+          amount_paise: quote.invoice_total_paise,
+          amc_covered: false,
         };
         return sendSuccess(res, { pricing });
       }

@@ -18,6 +18,12 @@ const CronService = {
       await CronService.checkAmcRenewals();
       await CronService.checkSlaBreaches();
       await CronService.expireCertificates();
+      await CronService.processScheduledNotifications();
+      // Sweep read/stale in-app notification rows (feed shows unread only)
+      await db.query(
+        `DELETE FROM in_app_notifications
+          WHERE read OR created_at < NOW() - INTERVAL '30 days'`
+      ).catch(() => {});
     });
 
     // SLA breach check every 30 minutes
@@ -51,6 +57,62 @@ const CronService = {
     IncentivesCron.start();
 
     console.log('✅ Cron jobs started');
+  },
+
+  // Process due scheduled notifications (spec 6.4):
+  //   recleaning_reminder — job_date + 83 days (7 days before 90-day expiry)
+  //   amc_upsell          — day 3 post-service for non-AMC customers
+  processScheduledNotifications: async () => {
+    try {
+      const { rows } = await db.query(
+        `SELECT sn.*, u.phone, u.name, u.fcm_token
+           FROM scheduled_notifications sn
+           JOIN users u ON u.id = sn.customer_id
+          WHERE sn.sent = FALSE AND sn.due_date <= CURRENT_DATE
+          ORDER BY sn.due_date ASC
+          LIMIT 200`
+      );
+      for (const n of rows) {
+        try {
+          if (n.type === 'recleaning_reminder') {
+            await NotificationService.sendWhatsApp(n.phone, 'renewal_reminder', [
+              { name: 'customer_name', value: n.name || 'Customer' },
+            ]);
+            if (n.customer_id || n.fcm_token) {
+              await NotificationService.notifyUser({ id: n.customer_id, fcm_token: n.fcm_token },
+                '💧 Time for your next tank cleaning',
+                'Your hygiene certificate expires in 7 days. Book your next cleaning to keep your water safe.',
+                { type: 'recleaning_reminder' });
+            }
+          } else if (n.type === 'whatsapp_retry') {
+            const p = n.payload || {};
+            if (p.phone && p.template) {
+              await NotificationService.sendWhatsApp(p.phone, p.template, p.params || []);
+            }
+          } else if (n.type === 'amc_upsell') {
+            // Skip if the customer signed an AMC since scheduling
+            const { rows: amc } = await db.query(
+              `SELECT id FROM amc_contracts WHERE customer_id = $1 AND status = 'active' LIMIT 1`,
+              [n.customer_id]
+            );
+            if (!amc.length) {
+              await NotificationService.sendWhatsApp(n.phone, 'amc_followup', [
+                { name: 'customer_name', value: n.name || 'Customer' },
+              ]);
+            }
+          }
+          await db.query(
+            `UPDATE scheduled_notifications SET sent = TRUE, sent_at = NOW() WHERE id = $1`,
+            [n.id]
+          );
+        } catch (e) {
+          console.warn('[cron] scheduled notification failed:', n.id, e?.message);
+        }
+      }
+      if (rows.length) console.log(`📆 Processed ${rows.length} scheduled notification(s)`);
+    } catch (e) {
+      console.error('[cron] processScheduledNotifications failed:', e?.message);
+    }
   },
 
   // Check AMC contracts expiring in 30, 14, 7 days

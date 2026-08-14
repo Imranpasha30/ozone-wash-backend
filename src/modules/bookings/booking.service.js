@@ -3,6 +3,15 @@ const JobRepository = require('../jobs/job.repository');
 const AmcRepository = require('../amc/amc.repository');
 const EcoScoreRepository = require('../ecoscore/ecoscore.repository');
 const AdminAlertsService = require('../admin-alerts/admin-alerts.service');
+const PricingService = require('../../services/pricing');
+const FunnelService = require('../funnel/funnel.service');
+
+// Canonical matrix plan → amc_contracts.plan_type (legacy CHECK constraint names)
+const CONTRACT_PLAN_NAMES = {
+  half_yearly: 'halfyearly',
+  quarterly: 'quarterly',
+  monthly: 'monthly',
+};
 
 // Pricing config — one-time service targets ~₹1500+
 const BASE_PRICES = {
@@ -85,9 +94,9 @@ const BookingService = {
   // Create a new booking and auto-create a job
   createBooking: async (customerId, data) => {
     // 1. Validate tank type
-    const validTankTypes = ['overhead', 'underground', 'sump'];
+    const validTankTypes = ['overhead', 'underground', 'sump', 'sintex'];
     if (!validTankTypes.includes(data.tank_type)) {
-      throw { status: 400, message: 'Invalid tank type. Must be overhead, underground or sump.' };
+      throw { status: 400, message: 'Invalid tank type. Must be overhead, underground, sump or sintex.' };
     }
 
     // 2. Validate payment method
@@ -96,13 +105,15 @@ const BookingService = {
       throw { status: 400, message: 'Invalid payment method.' };
     }
 
-    // 3. Auto-detect active AMC for this customer
-    let activePlan = null;
+    // 3. Auto-detect active AMC for this customer (must have visits remaining)
+    let activeContract = null;
     try {
       const contracts = await AmcRepository.findByCustomer(customerId);
-      const active = contracts.find(c => c.status === 'active');
-      if (active) activePlan = active.plan_type;
+      activeContract = contracts.find(
+        (c) => c.status === 'active' && Number(c.services_remaining ?? 1) > 0
+      ) || null;
     } catch (_) {}
+    const activePlan = activeContract ? activeContract.plan_type : null;
 
     // 3b. Check last EcoScore for loyalty discount (score ≥ 80 → 10% off, score ≥ 60 → 5% off)
     let ecoDiscount = 0;
@@ -115,38 +126,159 @@ const BookingService = {
       }
     } catch (_) {}
 
-    // 4. Calculate price (AMC discount applied automatically if active)
+    // 4. Price the booking.
+    //    V2 (spec §5): engaged when the app sends a `plan` (or an AMC upsell
+    //    via `purchase_amc_plan` on the payment step). One-time = 1 service;
+    //    any other plan = annual AMC invoice, contract created below.
+    //    Legacy path kept for old clients that send neither.
     const tanks = data.tanks && data.tanks.length > 0 ? data.tanks : null;
-    const rawPricing = BookingService.calculatePrice(
-      data.tank_type,
-      data.tank_size_litres,
-      data.addons,
-      activePlan,
-      tanks
-    );
+    const requestedPlan = PricingService.normalizePlan(data.purchase_amc_plan || data.plan);
 
-    // Apply eco loyalty discount on subtotal (only when not AMC-covered base)
-    let pricing = rawPricing;
-    if (ecoDiscount > 0 && rawPricing.grand_total > 0) {
-      const discountAmt = Math.round(rawPricing.subtotal * ecoDiscount / 100);
-      const newTotal = Math.max(0, rawPricing.subtotal - discountAmt);
-      const newGst = Math.round(newTotal * 0.18);
-      const newGrand = newTotal + newGst;
+    let pricing;
+    let amcContract = null;
+
+    if (requestedPlan) {
+      const tankList = (tanks || [{ tank_size_litres: data.tank_size_litres }])
+        .map((t) => Number(t.tank_size_litres));
+      const buyingAmc = !activeContract && requestedPlan !== 'one_time';
+
+      const quote = await PricingService.quoteInvoice({
+        tanks: tankList,
+        plan: activeContract ? 'one_time' : requestedPlan,
+        addon_codes: data.addons || [],
+      });
+
+      // Chargeable service portion:
+      //   active AMC        → ₹0 (covered by plan), add-ons only
+      //   buying AMC now    → full annual plan amount (this visit = visit #1)
+      //   one-time          → single service amount
+      const servicePaise = activeContract
+        ? 0
+        : (buyingAmc ? quote.annual_service_total_paise : quote.per_service_total_paise);
+      let invoicePaise = servicePaise + quote.addons_total_paise;
+
+      // Eco loyalty discount on the invoice (GST-inclusive figures).
+      let ecoAmtPaise = 0;
+      if (ecoDiscount > 0 && invoicePaise > 0) {
+        ecoAmtPaise = Math.round(invoicePaise * ecoDiscount / 100);
+        invoicePaise -= ecoAmtPaise;
+      }
+      const exGst = PricingService.exGstFromInc(invoicePaise);
+
       pricing = {
-        ...rawPricing,
-        eco_discount_pct: ecoDiscount,
-        eco_discount_amount: discountAmt,
-        eco_discount_label: ecoDiscountLabel,
-        subtotal: newTotal,
-        gst: newGst,
-        grand_total: newGrand,
-        amount_paise: newGrand * 100,
+        billing_version: 2,
+        plan: activeContract ? activeContract.plan_type : requestedPlan,
+        services_per_year: quote.services_per_year,
+        tank_count: quote.tank_count,
+        tanks: quote.tanks,
+        amc_covered: !!activeContract,
+        amc_purchase: buyingAmc,
+        base_price: Math.round(servicePaise / 100),
+        addon_total: Math.round(quote.addons_total_paise / 100),
+        discount_amount: activeContract ? Math.round(quote.per_service_total_paise / 100) : 0,
+        eco_discount_pct: ecoDiscount || undefined,
+        eco_discount_amount: ecoAmtPaise ? Math.round(ecoAmtPaise / 100) : undefined,
+        eco_discount_label: ecoDiscountLabel || undefined,
+        subtotal: Math.round(exGst / 100),
+        gst: Math.round((invoicePaise - exGst) / 100),
+        grand_total: Math.round(invoicePaise / 100),
+        amount_paise: invoicePaise,
+        requires_inspection: quote.requires_inspection,
+        tanks_count: quote.tank_count,
       };
+
+      // AMC purchased AT CHECKOUT → create the annual contract now
+      // (pending_payment; activated when the booking payment verifies).
+      // This booking counts as visit #1 of services_per_year.
+      if (buyingAmc) {
+        const startDate = new Date();
+        const endDate = new Date(startDate);
+        endDate.setMonth(endDate.getMonth() + 12); // AMC = annual contract of N services
+        amcContract = await AmcRepository.create({
+          customer_id: customerId,
+          tank_ids: [],
+          plan_type: CONTRACT_PLAN_NAMES[requestedPlan] || requestedPlan,
+          sla_terms: {
+            response_hrs: 24,
+            services_per_year: quote.services_per_year,
+            incident_resolution_hrs: 48,
+          },
+          start_date: startDate,
+          end_date: endDate,
+          amount_paise: quote.annual_service_total_paise,
+          status: data.payment_method === 'cod' ? 'active' : 'pending_payment',
+          payment_status: data.payment_method === 'cod' ? 'pending' : 'pending',
+          tank_size_litres: Math.max(...tankList),
+          tank_count: quote.tank_count,
+          services_per_year: quote.services_per_year,
+          source: 'checkout_upsell',
+        });
+        pricing.amc_contract_id = amcContract.id;
+        pricing.amc_visit_note = `Visit 1 of ${quote.services_per_year} — this service is counted in your plan`;
+      }
+    } else {
+      // ── Legacy path (old clients) ──────────────────────────────────────
+      const rawPricing = BookingService.calculatePrice(
+        data.tank_type,
+        data.tank_size_litres,
+        data.addons,
+        activePlan,
+        tanks
+      );
+      pricing = rawPricing;
+      if (ecoDiscount > 0 && rawPricing.grand_total > 0) {
+        const discountAmt = Math.round(rawPricing.subtotal * ecoDiscount / 100);
+        const newTotal = Math.max(0, rawPricing.subtotal - discountAmt);
+        const newGst = Math.round(newTotal * 0.18);
+        const newGrand = newTotal + newGst;
+        pricing = {
+          ...rawPricing,
+          eco_discount_pct: ecoDiscount,
+          eco_discount_amount: discountAmt,
+          eco_discount_label: ecoDiscountLabel,
+          subtotal: newTotal,
+          gst: newGst,
+          grand_total: newGrand,
+          amount_paise: newGrand * 100,
+        };
+      }
     }
+
+    // 4c. Dynamic scheduling: compute the service duration (per-tank clean
+    // minutes by size + travel buffer between distinct locations) and verify
+    // van capacity for the chosen window — reject when the fleet is full.
+    //
+    // CONCURRENCY: a per-date advisory lock (held in Postgres, so it also
+    // works across server instances) serializes check→insert. Two customers
+    // grabbing the last van simultaneously can no longer both pass the
+    // capacity read — the second waits, re-reads, and gets a clean 409.
+    let durationMin = null;
+    let releaseSlotLock = null;
+    try {
+      const SchedulingService = require('../../services/scheduling.service');
+      const tankList = tanks || [{ tank_size_litres: data.tank_size_litres }];
+      const need = await SchedulingService.durationFor(tankList);
+      durationMin = need.duration_min;
+      releaseSlotLock = await SchedulingService.acquireSlotLock(String(data.slot_time).slice(0, 10));
+      const cap = await SchedulingService.capacityOk(data.slot_time, durationMin);
+      if (!cap.ok) {
+        throw { status: 409, message: `That slot just filled up — all ${cap.vans} crew(s) are booked for this window. Pick another slot.` };
+      }
+    } catch (e) {
+      if (releaseSlotLock) { releaseSlotLock().catch(() => {}); releaseSlotLock = null; }
+      if (e?.status) throw e;
+      console.warn('[bookings] scheduling check skipped:', e?.message);
+    }
+
+    // booking/job are used after the critical section (alerts, return) —
+    // declared outside so the try block doesn't scope them away.
+    let booking;
+    let job;
+    try {
 
     // 5. Create booking
     const firstTank = tanks ? tanks[0] : null;
-    const booking = await BookingRepository.create({
+    booking = await BookingRepository.create({
       customer_id: customerId,
       tank_type: firstTank ? firstTank.tank_type : data.tank_type,
       tank_size_litres: firstTank ? firstTank.tank_size_litres : data.tank_size_litres,
@@ -156,22 +288,48 @@ const BookingService = {
       lng: data.lng || null,
       slot_time: data.slot_time,
       addons: data.addons || [],
-      amc_plan: activePlan,
+      amc_plan: amcContract ? amcContract.plan_type : activePlan,
       payment_method: data.payment_method,
       amount_paise: pricing.amount_paise,
       property_type: data.property_type || 'residential',
       contact_name: data.contact_name || null,
       contact_phone: data.contact_phone || null,
+      plan: requestedPlan || 'one_time',
+      amc_contract_id: amcContract ? amcContract.id : (activeContract ? activeContract.id : null),
+      pricing,
     });
 
+    // 5b. Funnel: booking placed → close the abandoned-checkout lead.
+    FunnelService.markConverted(customerId, booking.id).catch?.(() => {});
+
+    // 5c. Persist the computed service duration — the slot engine reads it to
+    // block vans for the right window.
+    if (durationMin) {
+      const dbc = require('../../config/db');
+      dbc.query(`UPDATE bookings SET duration_min = $1 WHERE id = $2`, [durationMin, booking.id]).catch(() => {});
+    }
+
     // 6. Auto-create a job from this booking
-    const job = await JobRepository.create({
+    job = await JobRepository.create({
       booking_id: booking.id,
       customer_id: customerId,
       scheduled_at: data.slot_time,
       location_lat: data.lat || null,
       location_lng: data.lng || null,
     });
+    if (durationMin && job?.id) {
+      const dbc = require('../../config/db');
+      await dbc.query(`UPDATE jobs SET duration_min = $1 WHERE id = $2`, [durationMin, job.id]).catch(() => {});
+    }
+
+    // Booking + job are committed and visible — the next waiter's capacity
+    // read now counts them. Release the per-date mutex.
+    if (releaseSlotLock) { releaseSlotLock().catch(() => {}); releaseSlotLock = null; }
+    } catch (e) {
+      // Any failure inside the critical section must free the mutex too.
+      if (releaseSlotLock) { releaseSlotLock().catch(() => {}); }
+      throw e;
+    }
 
     // 7. Fire-and-forget conflict detection. If the slot is overbooked or no
     //    team is available, an admin alert is queued; never blocks the user.

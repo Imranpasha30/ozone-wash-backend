@@ -8,8 +8,9 @@ const AmcRepository = {
       `INSERT INTO amc_contracts (
         customer_id, tank_ids, plan_type, sla_terms,
         start_date, end_date, status, amount_paise,
-        payment_status, job_type, resource_type
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        payment_status, job_type, resource_type,
+        tank_size_litres, tank_count, services_per_year, source
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
       RETURNING *`,
       [
         data.customer_id,
@@ -23,6 +24,10 @@ const AmcRepository = {
         data.payment_status || 'pending',
         'tank_cleaning',
         'tank',
+        data.tank_size_litres || null,
+        data.tank_count || 1,
+        data.services_per_year || null,
+        data.source || 'standalone',
       ]
     );
     return result.rows[0];

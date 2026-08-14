@@ -164,12 +164,12 @@ const JobController = {
       const result = await JobService.generateStartOtp(req.params.id, req.user.id);
       // Send OTP to customer via push notification
       JobRepository.findById(req.params.id).then(fullJob => {
-        if (fullJob && fullJob.customer_fcm_token) {
-          NotificationService.sendPush(
-            fullJob.customer_fcm_token,
+        if (fullJob) {
+          NotificationService.notifyUser(
+            { id: fullJob.customer_id, fcm_token: fullJob.customer_fcm_token },
             '🔑 Start OTP',
             `Your start OTP is: ${fullJob.start_otp}. Share this with the technician to begin service.`,
-            { job_id: fullJob.id, type: 'start_otp', otp: fullJob.start_otp }
+            { job_id: fullJob.id, booking_id: fullJob.booking_id || '', type: 'start_otp', otp: fullJob.start_otp }
           );
         }
       }).catch(() => {});
@@ -180,21 +180,65 @@ const JobController = {
   },
 
   // POST /api/v1/jobs/:id/verify-start-otp
+  // Body: { otp, gps_lat?, gps_lng? } — GPS feeds the 200m geofence (G-1)
   verifyStartOtp: async (req, res, next) => {
     try {
-      const { otp } = req.body;
+      const { otp, gps_lat, gps_lng, arrival_photo_url } = req.body;
       if (!otp) return sendError(res, 'OTP is required', 400);
-      const job = await JobService.verifyStartOtp(req.params.id, req.user.id, otp);
-      // Notify customer that job has started
+      const job = await JobService.verifyStartOtp(req.params.id, req.user.id, otp, { gps_lat, gps_lng, arrival_photo_url });
+      // Notify customer that job has started (push + WhatsApp, server-side)
       JobRepository.findById(req.params.id).then(fullJob => {
         if (fullJob) {
           NotificationService.onJobStarted(
-            { fcm_token: fullJob.customer_fcm_token },
+            { fcm_token: fullJob.customer_fcm_token, phone: fullJob.customer_phone },
             fullJob
           );
+          if (fullJob.customer_phone) {
+            NotificationService.sendWhatsApp(fullJob.customer_phone, 'job_started', [
+              { name: 'job_id', value: String(fullJob.id).slice(0, 8) },
+            ]).catch(() => {});
+          }
         }
       }).catch(() => {});
       return sendSuccess(res, { job }, 'Start OTP verified. Job started.');
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // PATCH /api/v1/jobs/:id/en-route — crew departed for the site (step 1.1)
+  markEnRoute: async (req, res, next) => {
+    try {
+      const result = await JobService.markEnRoute(req.params.id, req.user.id);
+      // Notify the customer (server-side): push + WhatsApp + in-app banner
+      // (the banner reads departure_time via /jobs/customer-alerts).
+      JobRepository.findById(req.params.id).then((fullJob) => {
+        if (!fullJob) return;
+        if (fullJob.customer_id) {
+          NotificationService.notifyUser(
+            { id: fullJob.customer_id, fcm_token: fullJob.customer_fcm_token },
+            '🚐 Crew on the way!',
+            'Your OzoneWash team has departed and is heading to your location.',
+            { job_id: fullJob.id, booking_id: fullJob.booking_id, type: 'crew_departed' }
+          ).catch(() => {});
+        }
+        if (fullJob.customer_phone) {
+          NotificationService.sendWhatsApp(fullJob.customer_phone, 'crew_departed', [
+            { name: 'job_id', value: String(fullJob.id).slice(0, 8) },
+          ]).catch(() => {});
+        }
+      }).catch(() => {});
+      return sendSuccess(res, result, 'Departure logged');
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // GET /api/v1/jobs/customer-alerts — live banners for the customer app
+  customerAlerts: async (req, res, next) => {
+    try {
+      const alerts = await JobRepository.customerAlerts(req.user.id);
+      return sendSuccess(res, { alerts });
     } catch (err) {
       next(err);
     }
@@ -206,13 +250,14 @@ const JobController = {
       const result = await JobService.generateEndOtp(req.params.id, req.user.id);
       // Send both OTPs to customer via push notification
       JobRepository.findById(req.params.id).then(fullJob => {
-        if (fullJob && fullJob.customer_fcm_token) {
-          NotificationService.sendPush(
-            fullJob.customer_fcm_token,
+        if (fullJob) {
+          NotificationService.notifyUser(
+            { id: fullJob.customer_id, fcm_token: fullJob.customer_fcm_token },
             '🔑 Service Feedback OTP',
             `Your technician has completed the work. Open the app to share your feedback OTP.`,
             {
               job_id: fullJob.id,
+              booking_id: fullJob.booking_id || '',
               type: 'end_otp',
               otp_satisfied: fullJob.end_otp_satisfied,
               otp_unsatisfied: fullJob.end_otp_unsatisfied,

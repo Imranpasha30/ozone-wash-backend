@@ -6,6 +6,20 @@ const {
   requireAdminRole,
 } = require('../../middleware/admin-auth.middleware');
 
+/**
+ * @swagger
+ * tags:
+ *   name: AdminAuth,
+ *   description: >
+ *     Separate admin authentication with revocable sessions, roles and audit log.
+ *
+ * Endpoints in this module:
+ *   POST  /login
+ *   POST  /logout
+ *   POST  /change-password
+ */
+
+
 const router = express.Router();
 
 /**

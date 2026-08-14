@@ -80,6 +80,7 @@ router.patch('/requests/:requestId/reject', authenticate, requireRole('admin'), 
 router.get('/my', authenticate, requireRole('field_team'), JobController.getMyJobs);
 router.get('/route-optimize', authenticate, requireRole('field_team'), JobController.optimizeRoute);
 router.patch('/:id/start', authenticate, requireRole('field_team'), JobController.startJob);
+router.patch('/:id/en-route', authenticate, requireRole('field_team'), JobController.markEnRoute);
 
 // OTP routes (field team)
 router.post('/:id/generate-start-otp', authenticate, requireRole('field_team'), JobController.generateStartOtp);
@@ -89,6 +90,9 @@ router.post('/:id/verify-end-otp', authenticate, requireRole('field_team'), otpV
 
 // Customer OTP request
 router.post('/:id/customer-request-otp', authenticate, requireRole('customer'), JobController.customerRequestStartOtp);
+// Customer in-app alert banners (OTP requested / crew departed).
+// NOTE: must stay above the catch-all GET /:id route.
+router.get('/customer-alerts', authenticate, requireRole('customer'), JobController.customerAlerts);
 
 // Transfer (field team or admin)
 router.post('/:id/transfer', authenticate, requireRole('field_team', 'admin'), transferValidation, JobController.transferJob);
