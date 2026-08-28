@@ -39,8 +39,14 @@ const SAC_AUTO = '998538';   // auto wash (reserved; auto-wash has its own cert 
 
 /* ── Fiscal year (India: Apr 1 – Mar 31) ──────────────────────────────── */
 function fiscalYearFor(date = new Date()) {
-  const y = date.getFullYear();
-  const m = date.getMonth(); // 0 = Jan
+  // Derive year/month in IST (Asia/Kolkata) — the server may run in UTC
+  // (Railway), which would put invoices issued late on Mar 31 / early Apr 1
+  // into the wrong FY and number series.
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: 'numeric',
+  }).formatToParts(date);
+  const y = Number(parts.find((p) => p.type === 'year').value);
+  const m = Number(parts.find((p) => p.type === 'month').value) - 1; // 0 = Jan
   const startYear = m >= 3 ? y : y - 1;         // Apr (index 3) starts the FY
   const endYY = String((startYear + 1) % 100).padStart(2, '0');
   return `${startYear}-${endYY}`;               // e.g. 2026-27

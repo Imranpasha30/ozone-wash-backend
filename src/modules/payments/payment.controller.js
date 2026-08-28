@@ -43,34 +43,49 @@ const activateLinkedAmc = async (booking, paymentRefs) => {
   }
 };
 
-/** Settle a booking or AMC contract from a captured payment's order id. */
-const settleByOrderId = async (orderId, paymentId) => {
+/**
+ * Settle a booking or AMC contract from a captured payment's order id.
+ * gateway defaults to 'razorpay' but is passed through for PayU/Easebuzz callbacks.
+ * The pending->paid flip is done as an ATOMIC conditional UPDATE so two
+ * concurrent captures (e.g. payment.captured + order.paid) can't both run the
+ * side-effects — only the row-modifying update proceeds.
+ */
+const settleByOrderId = async (orderId, paymentId, gateway = 'razorpay') => {
   if (!orderId) return;
+  // Atomically claim the booking (only the transition off 'paid' wins).
   const b = await db.query(
-    `SELECT id, payment_status FROM bookings WHERE razorpay_order_id = $1 LIMIT 1`, [orderId]
+    `UPDATE bookings
+        SET razorpay_payment_id = COALESCE($2, razorpay_payment_id),
+            payment_status = 'paid', updated_at = NOW()
+      WHERE razorpay_order_id = $1 AND payment_status <> 'paid'
+      RETURNING id, amc_contract_id`,
+    [orderId, paymentId]
   );
   if (b.rows.length) {
-    if (b.rows[0].payment_status === 'paid') return; // already settled by client verify
-    const booking = await BookingRepository.updatePayment(b.rows[0].id, {
-      razorpay_order_id: orderId, razorpay_payment_id: paymentId, payment_status: 'paid',
-    });
     await BookingRepository.updateStatus(b.rows[0].id, 'confirmed');
-    await activateLinkedAmc(booking, { order_id: orderId, payment_id: paymentId });
-    issueBookingInvoice(b.rows[0].id, { gateway: 'razorpay', payment_id: paymentId });
-    console.log(`✅ [webhook] booking ${b.rows[0].id} settled via razorpay capture`);
+    await activateLinkedAmc({ id: b.rows[0].id, amc_contract_id: b.rows[0].amc_contract_id },
+      { order_id: orderId, payment_id: paymentId });
+    issueBookingInvoice(b.rows[0].id, { gateway, payment_id: paymentId });
+    console.log(`✅ [gw:${gateway}] booking ${b.rows[0].id} settled via capture`);
     return;
   }
+  // A booking exists for this order but was already paid → nothing to do.
+  const already = await db.query(`SELECT 1 FROM bookings WHERE razorpay_order_id = $1 LIMIT 1`, [orderId]);
+  if (already.rows.length) return;
+
+  // Otherwise try an AMC contract with the same atomic guard.
   const c = await db.query(
-    `SELECT id, payment_status FROM amc_contracts WHERE razorpay_order_id = $1 LIMIT 1`, [orderId]
+    `UPDATE amc_contracts
+        SET razorpay_payment_id = COALESCE($2, razorpay_payment_id),
+            payment_status = 'paid', updated_at = NOW()
+      WHERE razorpay_order_id = $1 AND payment_status <> 'paid'
+      RETURNING id`,
+    [orderId, paymentId]
   );
   if (c.rows.length) {
-    if (c.rows[0].payment_status === 'paid') return;
-    await AmcRepository.updatePayment(c.rows[0].id, {
-      razorpay_order_id: orderId, razorpay_payment_id: paymentId, payment_status: 'paid',
-    });
     await AmcRepository.updateStatus(c.rows[0].id, 'active');
-    issueAmcInvoice(c.rows[0].id, { gateway: 'razorpay', payment_id: paymentId });
-    console.log(`✅ [webhook] AMC ${c.rows[0].id} settled via razorpay capture`);
+    issueAmcInvoice(c.rows[0].id, { gateway, payment_id: paymentId });
+    console.log(`✅ [gw:${gateway}] AMC ${c.rows[0].id} settled via capture`);
   }
 };
 
@@ -130,10 +145,12 @@ const PaymentController = {
         amount: order.amount,
         currency: order.currency,
         booking_id,
-        // Razorpay checkout SDK needs the key; Easebuzz needs the hosted URL.
+        // Razorpay checkout SDK needs the key; Easebuzz needs the hosted URL;
+        // PayU needs the signed form params to POST to payment_url.
         key_id: order.key_id || null,
         payment_url: order.payment_url || null,
         access_key: order.access_key || null,
+        payment_params: order.payment_params || null,
       }, 'Payment order created');
     } catch (err) {
       next(err);
@@ -151,10 +168,31 @@ const PaymentController = {
         return sendError(res, 'Missing booking_id', 400);
       }
 
+      // Load + authorize BEFORE trusting the payload. The Razorpay signature only
+      // proves the (order_id,payment_id) pair is genuine — it does NOT bind that
+      // payment to this booking. Without these guards a customer could replay a
+      // valid signature from a cheap order to settle any expensive booking.
+      const existing = await BookingRepository.findById(booking_id);
+      if (!existing) return sendError(res, 'Booking not found', 404);
+      if (existing.customer_id !== req.user.id) return sendError(res, 'Access denied', 403);
+      if (existing.payment_status === 'paid') {
+        return sendSuccess(res, { payment_status: 'paid', booking_id }, 'Booking already paid');
+      }
+      if (existing.payment_status !== 'pending') {
+        return sendError(res, 'Booking is not awaiting payment', 400);
+      }
+
       const result = PaymentService.verifyPayment(req.body);
 
+      // Bind the verified payment to THIS booking: the signed order id must equal
+      // the order created for this booking at create-order time.
+      const providedOrderId = req.body.razorpay_order_id || req.body.txnid || null;
+      if (!existing.razorpay_order_id || !providedOrderId || existing.razorpay_order_id !== providedOrderId) {
+        return sendError(res, 'Payment does not match this booking', 400);
+      }
+
       const booking = await BookingRepository.updatePayment(booking_id, {
-        razorpay_order_id: req.body.razorpay_order_id || req.body.txnid || null,
+        razorpay_order_id: providedOrderId,
         razorpay_payment_id: result.payment_id || null,
         payment_status: 'paid',
       });
@@ -162,10 +200,7 @@ const PaymentController = {
       await BookingRepository.updateStatus(booking_id, 'confirmed');
 
       // AMC purchased at checkout → activate; this booking = visit #1 of the plan.
-      await activateLinkedAmc(booking, {
-        order_id: req.body.razorpay_order_id || req.body.txnid,
-        payment_id: result.payment_id,
-      });
+      await activateLinkedAmc(booking, { order_id: providedOrderId, payment_id: result.payment_id });
 
       const customer = { phone: booking.customer_phone, fcm_token: null };
       NotificationService.onPaymentConfirmed(customer, booking).catch(() => {});
@@ -179,6 +214,7 @@ const PaymentController = {
         booking_id,
       }, 'Payment verified successfully');
     } catch (err) {
+      if (err?.status) return sendError(res, err.message, err.status);
       next(err);
     }
   },
@@ -239,60 +275,115 @@ const PaymentController = {
   },
 
   // POST /api/v1/payments/refund  (admin)
-  // Body: { booking_id, amount_paise?, reason? }
-  // Omit amount_paise for a full refund of the remaining balance; pass it for
-  // a partial refund. Refunds are tracked in the payment_refunds ledger and the
-  // booking flips to 'refunded' once fully refunded, else 'partially_refunded'.
+  // Body: { booking_id | contract_id, amount_paise?, reason? }
+  // Omit amount_paise for a full refund of the remaining balance; pass it for a
+  // partial refund. Runs inside a transaction with SELECT ... FOR UPDATE on the
+  // target row so two concurrent refunds of the same booking/contract cannot
+  // both call the gateway (no double-refund). Tracked in payment_refunds; the
+  // row flips to 'refunded' once fully refunded, else 'partially_refunded'.
   refundPayment: async (req, res, next) => {
-    try {
-      const { booking_id, amount_paise, reason } = req.body;
+    const { booking_id, contract_id, amount_paise, reason } = req.body;
+    if (!booking_id && !contract_id) {
+      return sendError(res, 'booking_id or contract_id is required', 400);
+    }
+    const isAmc = !!contract_id && !booking_id;
+    const table = isAmc ? 'amc_contracts' : 'bookings';   // fixed set — safe to interpolate
+    const idVal = isAmc ? contract_id : booking_id;
+    const label = isAmc ? 'Contract' : 'Booking';
 
-      const booking = await BookingRepository.findById(booking_id);
-      if (!booking) return sendError(res, 'Booking not found', 404);
-      if (!['paid', 'partially_refunded'].includes(booking.payment_status)) {
-        return sendError(res, 'Booking is not in a refundable state', 400);
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Lock the row for the duration of the refund.
+      const { rows } = await client.query(
+        `SELECT id, amount_paise, refunded_paise, payment_status, razorpay_order_id, razorpay_payment_id
+           FROM ${table} WHERE id = $1 FOR UPDATE`, [idVal]
+      );
+      if (!rows.length) { await client.query('ROLLBACK'); return sendError(res, `${label} not found`, 404); }
+      const row = rows[0];
+      if (!['paid', 'partially_refunded'].includes(row.payment_status)) {
+        await client.query('ROLLBACK'); return sendError(res, `${label} is not in a refundable state`, 400);
       }
 
-      const alreadyRefunded = Number(booking.refunded_paise) || 0;
-      const remaining = Number(booking.amount_paise) - alreadyRefunded;
-      if (remaining <= 0) return sendError(res, 'Booking is already fully refunded', 400);
+      const alreadyRefunded = Number(row.refunded_paise) || 0;
+      const remaining = Number(row.amount_paise) - alreadyRefunded;
+      if (remaining <= 0) { await client.query('ROLLBACK'); return sendError(res, `${label} is already fully refunded`, 400); }
 
-      // Default: refund whatever's left. Otherwise validate the partial amount.
       let refundAmt = amount_paise == null ? remaining : Math.floor(Number(amount_paise));
       if (!Number.isFinite(refundAmt) || refundAmt <= 0) {
-        return sendError(res, 'amount_paise must be a positive integer', 400);
+        await client.query('ROLLBACK'); return sendError(res, 'amount_paise must be a positive integer', 400);
       }
       if (refundAmt > remaining) {
-        return sendError(res, `Refund exceeds refundable balance (₹${remaining / 100})`, 400);
+        await client.query('ROLLBACK'); return sendError(res, `Refund exceeds refundable balance (₹${remaining / 100})`, 400);
       }
 
-      const gatewayName = String(booking.razorpay_order_id || '').startsWith('ozw_') ? 'easebuzz' : 'razorpay';
-      const refund = await PaymentService.refundPayment(booking.razorpay_payment_id, refundAmt, gatewayName);
+      const oid = String(row.razorpay_order_id || '');
+      const gatewayName = oid.startsWith('ozw_') ? 'easebuzz' : oid.startsWith('payu_') ? 'payu' : 'razorpay';
+      // Gateway call inside the lock: on failure we ROLLBACK (no ledger row, no
+      // status change) so a failed refund never half-commits.
+      const refund = await PaymentService.refundPayment(row.razorpay_payment_id, refundAmt, gatewayName);
 
       const newRefunded = alreadyRefunded + refundAmt;
-      const newStatus = newRefunded >= Number(booking.amount_paise) ? 'refunded' : 'partially_refunded';
+      const newStatus = newRefunded >= Number(row.amount_paise) ? 'refunded' : 'partially_refunded';
 
-      // Ledger + booking update
-      await db.query(
-        `INSERT INTO payment_refunds (booking_id, amount_paise, gateway, gateway_refund_id, reason, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [booking_id, refundAmt, gatewayName, refund?.id || null, reason || null, req.user?.id || null]
+      await client.query(
+        `INSERT INTO payment_refunds (booking_id, amc_contract_id, amount_paise, gateway, gateway_refund_id, reason, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [isAmc ? null : idVal, isAmc ? idVal : null, refundAmt, gatewayName, refund?.id || null, reason || null, req.user?.id || null]
       );
-      await db.query(
-        `UPDATE bookings SET refunded_paise = $1, payment_status = $2, updated_at = NOW() WHERE id = $3`,
-        [newRefunded, newStatus, booking_id]
+      await client.query(
+        `UPDATE ${table} SET refunded_paise = $1, payment_status = $2, updated_at = NOW() WHERE id = $3`,
+        [newRefunded, newStatus, idVal]
       );
+      await client.query('COMMIT');
 
       return sendSuccess(res, {
         refund,
         refunded_paise: newRefunded,
-        remaining_paise: Number(booking.amount_paise) - newRefunded,
+        remaining_paise: Number(row.amount_paise) - newRefunded,
         payment_status: newStatus,
       }, newStatus === 'refunded' ? 'Full refund initiated' : 'Partial refund initiated');
     } catch (err) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
       if (err?.status) return sendError(res, err.message, err.status);
       next(err);
+    } finally {
+      client.release();
     }
+  },
+
+  // POST /api/v1/payments/payu/callback  (no auth — hash-verified)
+  // PayU surl/furl target (form POST from the hosted checkout). Verifies the
+  // reverse hash, settles the booking/contract server-side (idempotent, atomic),
+  // and relays the result to the app WebView via postMessage.
+  payuCallback: async (req, res) => {
+    const p = req.body || {};
+    let settled = false;
+    try {
+      const result = PaymentService.verifyPayment({ ...p, gateway: 'payu' });
+      // txnid was saved as the order id on the booking/contract at order time.
+      await settleByOrderId(p.txnid, result.payment_id, 'payu');
+      const b = await db.query(`SELECT payment_status FROM bookings WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
+      if (b.rows.length) settled = b.rows[0].payment_status === 'paid';
+      else {
+        const c = await db.query(`SELECT payment_status FROM amc_contracts WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
+        settled = c.rows.length ? c.rows[0].payment_status === 'paid' : false;
+      }
+    } catch (e) {
+      console.warn('[payu] callback verify failed:', e?.message);
+    }
+
+    const status = settled ? 'success' : (String(p.status || 'failure').toLowerCase());
+    const payload = JSON.stringify({ source: 'payu', status, txnid: p.txnid || null });
+    res.set('Content-Type', 'text/html').send(`<!doctype html>
+<html><body style="font-family:sans-serif;text-align:center;padding-top:40vh;background:#fff">
+<p>${status === 'success' ? '✅ Payment successful — returning to app…' : '❌ Payment failed — returning to app…'}</p>
+<script>
+  var msg = ${JSON.stringify(payload)};
+  if (window.ReactNativeWebView) { window.ReactNativeWebView.postMessage(msg); }
+</script>
+</body></html>`);
   },
 
   // POST /api/v1/payments/webhook/razorpay  (no auth — signature-verified)
@@ -308,25 +399,35 @@ const PaymentController = {
 
     const evt = req.body || {};
     const eventId = req.headers['x-razorpay-event-id'] || `${evt.event}_${evt.created_at || ''}`;
-    // Idempotency: first insert wins; a redelivery is a no-op.
-    try {
-      const ins = await db.query(
-        `INSERT INTO webhook_events (gateway, event_id, event_type, payload)
-         VALUES ('razorpay', $1, $2, $3)
-         ON CONFLICT (gateway, event_id) DO NOTHING RETURNING id`,
-        [String(eventId), evt.event || null, JSON.stringify(evt)]
-      );
-      if (!ins.rows.length) return res.status(200).json({ success: true, deduped: true });
-    } catch (e) {
-      console.warn('[webhook] idempotency store unavailable:', e?.message);
-    }
 
+    // Fast-path dedup: if this event was already fully processed, ack 200.
+    try {
+      const seen = await db.query(
+        `SELECT 1 FROM webhook_events WHERE gateway='razorpay' AND event_id=$1 LIMIT 1`, [String(eventId)]
+      );
+      if (seen.rows.length) return res.status(200).json({ success: true, deduped: true });
+    } catch (_) { /* fall through — settlement below is idempotent anyway */ }
+
+    // Process FIRST. Settlement (atomic paid-guard) + invoicing (unique index)
+    // are idempotent, so re-processing a redelivery is safe. If processing
+    // throws, return 5xx so Razorpay RETRIES — do NOT mark the event processed.
     try {
       await handleRazorpayEvent(evt);
     } catch (e) {
-      console.error('[webhook] handler error:', e?.message);
+      console.error('[webhook] handler error — asking gateway to retry:', e?.message);
+      return res.status(500).json({ success: false, message: 'Processing failed; please retry' });
     }
-    // Always ack 200 once stored, so Razorpay stops retrying.
+
+    // Record as processed only after success (best-effort; dedup is an optimization).
+    try {
+      await db.query(
+        `INSERT INTO webhook_events (gateway, event_id, event_type, payload)
+         VALUES ('razorpay', $1, $2, $3) ON CONFLICT (gateway, event_id) DO NOTHING`,
+        [String(eventId), evt.event || null, JSON.stringify(evt)]
+      );
+    } catch (e) {
+      console.warn('[webhook] could not record processed event:', e?.message);
+    }
     return res.status(200).json({ success: true });
   },
 
@@ -367,6 +468,7 @@ const PaymentController = {
         key_id: order.key_id || null,
         payment_url: order.payment_url || null,
         access_key: order.access_key || null,
+        payment_params: order.payment_params || null,
       }, 'AMC payment order created');
     } catch (err) {
       next(err);
@@ -381,10 +483,26 @@ const PaymentController = {
         return sendError(res, 'Missing contract_id', 400);
       }
 
+      // Authorize + bind before trusting the signature (see verifyPayment).
+      const existing = await AmcRepository.findById(contract_id);
+      if (!existing) return sendError(res, 'Contract not found', 404);
+      if (existing.customer_id !== req.user.id) return sendError(res, 'Access denied', 403);
+      if (existing.payment_status === 'paid') {
+        return sendSuccess(res, { payment_status: 'paid', contract_id }, 'Contract already paid');
+      }
+      if (existing.payment_status !== 'pending') {
+        return sendError(res, 'Contract is not awaiting payment', 400);
+      }
+
       const result = PaymentService.verifyPayment(req.body);
 
+      const providedOrderId = req.body.razorpay_order_id || req.body.txnid || null;
+      if (!existing.razorpay_order_id || !providedOrderId || existing.razorpay_order_id !== providedOrderId) {
+        return sendError(res, 'Payment does not match this contract', 400);
+      }
+
       await AmcRepository.updatePayment(contract_id, {
-        razorpay_order_id: req.body.razorpay_order_id || req.body.txnid || null,
+        razorpay_order_id: providedOrderId,
         razorpay_payment_id: result.payment_id || null,
         payment_status: 'paid',
       });
@@ -400,6 +518,7 @@ const PaymentController = {
         contract_id,
       }, 'AMC payment verified successfully');
     } catch (err) {
+      if (err?.status) return sendError(res, err.message, err.status);
       next(err);
     }
   },

@@ -42,7 +42,10 @@ const AmcRepository = {
             AND b.status = 'completed'
             AND b.created_at >= a.start_date AND b.created_at <= a.end_date
         )::int as services_availed,
-        GREATEST(0, COALESCE(a.services_per_year, 1) -
+        GREATEST(0,
+          COALESCE(a.services_per_year, CASE a.plan_type
+            WHEN 'monthly' THEN 1 WHEN 'bimonthly' THEN 2 WHEN 'quarterly' THEN 3
+            WHEN '4month' THEN 4 WHEN 'halfyearly' THEN 6 WHEN 'yearly' THEN 12 ELSE 1 END) -
           (SELECT COUNT(*) FROM bookings b
             WHERE b.customer_id = a.customer_id AND b.amc_plan IS NOT NULL
               AND b.status = 'completed'
@@ -103,15 +106,9 @@ const AmcRepository = {
            AND b.created_at <= a.end_date
         ) as services_availed,
         GREATEST(0,
-          CASE a.plan_type
-            WHEN 'monthly' THEN 1
-            WHEN 'bimonthly' THEN 2
-            WHEN 'quarterly' THEN 3
-            WHEN '4month' THEN 4
-            WHEN 'halfyearly' THEN 6
-            WHEN 'yearly' THEN 12
-            ELSE 1
-          END -
+          COALESCE(a.services_per_year, CASE a.plan_type
+            WHEN 'monthly' THEN 1 WHEN 'bimonthly' THEN 2 WHEN 'quarterly' THEN 3
+            WHEN '4month' THEN 4 WHEN 'halfyearly' THEN 6 WHEN 'yearly' THEN 12 ELSE 1 END) -
           (SELECT COUNT(*) FROM bookings b
            WHERE b.customer_id = a.customer_id
              AND b.amc_plan IS NOT NULL

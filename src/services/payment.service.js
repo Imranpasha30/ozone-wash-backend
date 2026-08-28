@@ -23,12 +23,14 @@
  */
 const razorpay = require('./gateways/razorpay.gateway');
 const easebuzz = require('./gateways/easebuzz.gateway');
+const payu = require('./gateways/payu.gateway');
 
-const GATEWAYS = { razorpay, easebuzz };
+const GATEWAYS = { razorpay, easebuzz, payu };
 
 function activeGateway() {
   const forced = (process.env.PAYMENT_GATEWAY || '').trim().toLowerCase();
   if (GATEWAYS[forced]) return GATEWAYS[forced];
+  if (payu.isConfigured()) return payu;          // preferred once credentials are set
   if (razorpay.isConfigured()) return razorpay;
   if (easebuzz.isConfigured()) return easebuzz;
   return razorpay; // dev fallback — mock orders
@@ -38,7 +40,9 @@ function activeGateway() {
 function gatewayForPayload(payload = {}) {
   if (payload.gateway && GATEWAYS[payload.gateway]) return GATEWAYS[payload.gateway];
   if (payload.razorpay_order_id || payload.razorpay_signature) return razorpay;
-  if (payload.txnid || payload.easepayid) return easebuzz;
+  // PayU and Easebuzz both carry txnid — disambiguate by unique fields / prefix.
+  if (payload.mihpayid || String(payload.txnid || '').startsWith('payu_')) return payu;
+  if (payload.easepayid || String(payload.txnid || '').startsWith('ozw_')) return easebuzz;
   return activeGateway();
 }
 

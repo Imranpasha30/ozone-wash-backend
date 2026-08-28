@@ -89,6 +89,10 @@ router.post('/refund', authenticate, requireRole('admin'), PaymentController.ref
 // form POST, no JWT possible). Signature-verified inside the handler.
 router.post('/easebuzz/callback', PaymentController.easebuzzCallback);
 
+// PayU surl/furl target — hit by the PayU hosted checkout (form POST, no JWT).
+// Reverse-hash-verified inside the handler.
+router.post('/payu/callback', PaymentController.payuCallback);
+
 // Razorpay webhook — server-to-server, no JWT. Verified against
 // RAZORPAY_WEBHOOK_SECRET (raw-body HMAC) inside the handler.
 router.post('/webhook/razorpay', PaymentController.razorpayWebhook);

@@ -143,38 +143,24 @@ const AmcService = {
     );
   },
 
-  // Renew a contract
+  // Renew a contract.
+  // Delegates to the matrix-aware createRenewalFor so manual and automatic
+  // renewals price IDENTICALLY (per-tank × tanks × services/year, GST-inclusive)
+  // and carry tank_size_litres / tank_count / services_per_year. The old
+  // contract is left active until its end_date (the renewal starts there);
+  // the daily cron expires it when the term actually ends.
   renewContract: async (contractId, userId, userRole) => {
     const contract = await AmcRepository.findById(contractId);
     if (!contract) {
       throw { status: 404, message: 'Contract not found.' };
     }
-
     if (userRole === 'customer' && contract.customer_id !== userId) {
       throw { status: 403, message: 'Access denied.' };
     }
-
-    // Calculate new end date
-    const newStartDate = new Date(contract.end_date);
-    const newEndDate = new Date(newStartDate);
-    newEndDate.setMonth(
-      newEndDate.getMonth() + PLAN_DURATIONS[contract.plan_type]
-    );
-
-    // Create new contract with same terms
-    const renewed = await AmcRepository.create({
-      customer_id: contract.customer_id,
-      tank_ids: contract.tank_ids,
-      plan_type: contract.plan_type,
-      sla_terms: contract.sla_terms,
-      start_date: newStartDate,
-      end_date: newEndDate,
-      amount_paise: PLAN_PRICES[contract.plan_type],
-    });
-
-    // Mark old contract as expired
-    await AmcRepository.updateStatus(contractId, 'expired');
-
+    const renewed = await AmcService.createRenewalFor(contract);
+    if (!renewed) {
+      throw { status: 400, message: 'This contract has already been renewed.' };
+    }
     return renewed;
   },
 

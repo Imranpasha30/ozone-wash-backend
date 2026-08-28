@@ -118,35 +118,24 @@ const CronService = {
     }
   },
 
-  // Check AMC contracts expiring in 30, 14, 7 days
+  // Send AMC renewal reminders ONLY on the exact threshold-crossing days
+  // (30/14/7 days out). Previously this looped supersets and re-notified every
+  // day, sending up to 3 reminders per run and repeating daily.
   checkAmcRenewals: async () => {
     try {
       console.log('🔄 Checking AMC renewals...');
+      const REMINDER_DAYS = [30, 14, 7];
+      const expiring = await AmcRepository.getExpiringSoon(30); // 0..30 days out
 
-      for (const days of [30, 14, 7]) {
-        const expiring = await AmcRepository.getExpiringSoon(days);
+      for (const contract of expiring) {
+        const daysLeft = Math.ceil((new Date(contract.end_date).getTime() - Date.now()) / 86400000);
+        if (!REMINDER_DAYS.includes(daysLeft)) continue; // notify once per threshold
 
-        for (const contract of expiring) {
-          // Get customer details
-          const customer = await db.query(
-            'SELECT * FROM users WHERE id = $1',
-            [contract.customer_id]
-          );
-
-          if (customer.rows[0]) {
-            await NotificationService.onAmcRenewalDue(
-              customer.rows[0],
-              contract,
-              days
-            );
-
-            // Mark renewal pending if within 30 days
-            if (days === 30) {
-              await AmcRepository.markRenewalPending(contract.id);
-            }
-
-            console.log(`📅 AMC renewal alert sent — Contract: ${contract.id} expires in ${days} days`);
-          }
+        const customer = await db.query('SELECT * FROM users WHERE id = $1', [contract.customer_id]);
+        if (customer.rows[0]) {
+          await NotificationService.onAmcRenewalDue(customer.rows[0], contract, daysLeft);
+          await AmcRepository.markRenewalPending(contract.id);
+          console.log(`📅 AMC renewal alert sent — Contract ${contract.id} expires in ${daysLeft} days`);
         }
       }
     } catch (err) {
