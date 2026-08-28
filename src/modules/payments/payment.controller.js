@@ -43,6 +43,57 @@ const activateLinkedAmc = async (booking, paymentRefs) => {
   }
 };
 
+/** Settle a booking or AMC contract from a captured payment's order id. */
+const settleByOrderId = async (orderId, paymentId) => {
+  if (!orderId) return;
+  const b = await db.query(
+    `SELECT id, payment_status FROM bookings WHERE razorpay_order_id = $1 LIMIT 1`, [orderId]
+  );
+  if (b.rows.length) {
+    if (b.rows[0].payment_status === 'paid') return; // already settled by client verify
+    const booking = await BookingRepository.updatePayment(b.rows[0].id, {
+      razorpay_order_id: orderId, razorpay_payment_id: paymentId, payment_status: 'paid',
+    });
+    await BookingRepository.updateStatus(b.rows[0].id, 'confirmed');
+    await activateLinkedAmc(booking, { order_id: orderId, payment_id: paymentId });
+    issueBookingInvoice(b.rows[0].id, { gateway: 'razorpay', payment_id: paymentId });
+    console.log(`✅ [webhook] booking ${b.rows[0].id} settled via razorpay capture`);
+    return;
+  }
+  const c = await db.query(
+    `SELECT id, payment_status FROM amc_contracts WHERE razorpay_order_id = $1 LIMIT 1`, [orderId]
+  );
+  if (c.rows.length) {
+    if (c.rows[0].payment_status === 'paid') return;
+    await AmcRepository.updatePayment(c.rows[0].id, {
+      razorpay_order_id: orderId, razorpay_payment_id: paymentId, payment_status: 'paid',
+    });
+    await AmcRepository.updateStatus(c.rows[0].id, 'active');
+    issueAmcInvoice(c.rows[0].id, { gateway: 'razorpay', payment_id: paymentId });
+    console.log(`✅ [webhook] AMC ${c.rows[0].id} settled via razorpay capture`);
+  }
+};
+
+/** Dispatch a verified Razorpay webhook event. */
+const handleRazorpayEvent = async (evt) => {
+  switch (evt?.event) {
+    case 'payment.captured':
+    case 'order.paid': {
+      const pay = evt?.payload?.payment?.entity || {};
+      await settleByOrderId(pay.order_id, pay.id);
+      break;
+    }
+    case 'payment.failed': {
+      const pay = evt?.payload?.payment?.entity || {};
+      console.warn(`[webhook] payment.failed for order ${pay.order_id} (${pay.error_description || 'no reason'})`);
+      break;
+    }
+    default:
+      // Other events (refund.processed, etc.) are stored for audit; no action.
+      break;
+  }
+};
+
 const PaymentController = {
 
   // POST /api/v1/payments/create-order
@@ -187,36 +238,96 @@ const PaymentController = {
 </body></html>`);
   },
 
-  // POST /api/v1/payments/refund
+  // POST /api/v1/payments/refund  (admin)
+  // Body: { booking_id, amount_paise?, reason? }
+  // Omit amount_paise for a full refund of the remaining balance; pass it for
+  // a partial refund. Refunds are tracked in the payment_refunds ledger and the
+  // booking flips to 'refunded' once fully refunded, else 'partially_refunded'.
   refundPayment: async (req, res, next) => {
     try {
-      const { booking_id } = req.body;
+      const { booking_id, amount_paise, reason } = req.body;
 
       const booking = await BookingRepository.findById(booking_id);
-      if (!booking) {
-        return sendError(res, 'Booking not found', 404);
+      if (!booking) return sendError(res, 'Booking not found', 404);
+      if (!['paid', 'partially_refunded'].includes(booking.payment_status)) {
+        return sendError(res, 'Booking is not in a refundable state', 400);
       }
-      if (booking.payment_status !== 'paid') {
-        return sendError(res, 'Booking is not paid', 400);
+
+      const alreadyRefunded = Number(booking.refunded_paise) || 0;
+      const remaining = Number(booking.amount_paise) - alreadyRefunded;
+      if (remaining <= 0) return sendError(res, 'Booking is already fully refunded', 400);
+
+      // Default: refund whatever's left. Otherwise validate the partial amount.
+      let refundAmt = amount_paise == null ? remaining : Math.floor(Number(amount_paise));
+      if (!Number.isFinite(refundAmt) || refundAmt <= 0) {
+        return sendError(res, 'amount_paise must be a positive integer', 400);
+      }
+      if (refundAmt > remaining) {
+        return sendError(res, `Refund exceeds refundable balance (₹${remaining / 100})`, 400);
       }
 
       const gatewayName = String(booking.razorpay_order_id || '').startsWith('ozw_') ? 'easebuzz' : 'razorpay';
-      const refund = await PaymentService.refundPayment(
-        booking.razorpay_payment_id,
-        booking.amount_paise,
-        gatewayName
+      const refund = await PaymentService.refundPayment(booking.razorpay_payment_id, refundAmt, gatewayName);
+
+      const newRefunded = alreadyRefunded + refundAmt;
+      const newStatus = newRefunded >= Number(booking.amount_paise) ? 'refunded' : 'partially_refunded';
+
+      // Ledger + booking update
+      await db.query(
+        `INSERT INTO payment_refunds (booking_id, amount_paise, gateway, gateway_refund_id, reason, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [booking_id, refundAmt, gatewayName, refund?.id || null, reason || null, req.user?.id || null]
+      );
+      await db.query(
+        `UPDATE bookings SET refunded_paise = $1, payment_status = $2, updated_at = NOW() WHERE id = $3`,
+        [newRefunded, newStatus, booking_id]
       );
 
-      await BookingRepository.updatePayment(booking_id, {
-        razorpay_order_id: booking.razorpay_order_id,
-        razorpay_payment_id: booking.razorpay_payment_id,
-        payment_status: 'refunded',
-      });
-
-      return sendSuccess(res, { refund }, 'Refund initiated successfully');
+      return sendSuccess(res, {
+        refund,
+        refunded_paise: newRefunded,
+        remaining_paise: Number(booking.amount_paise) - newRefunded,
+        payment_status: newStatus,
+      }, newStatus === 'refunded' ? 'Full refund initiated' : 'Partial refund initiated');
     } catch (err) {
+      if (err?.status) return sendError(res, err.message, err.status);
       next(err);
     }
+  },
+
+  // POST /api/v1/payments/webhook/razorpay  (no auth — signature-verified)
+  // Belt-and-suspenders settlement: even if the app closes mid-checkout, the
+  // captured payment settles the booking/AMC and issues the invoice.
+  razorpayWebhook: async (req, res) => {
+    const razorpay = require('../../services/gateways/razorpay.gateway');
+    const signature = req.headers['x-razorpay-signature'];
+    const raw = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
+    if (!razorpay.verifyWebhookSignature(raw, signature)) {
+      return res.status(400).json({ success: false, message: 'Invalid webhook signature' });
+    }
+
+    const evt = req.body || {};
+    const eventId = req.headers['x-razorpay-event-id'] || `${evt.event}_${evt.created_at || ''}`;
+    // Idempotency: first insert wins; a redelivery is a no-op.
+    try {
+      const ins = await db.query(
+        `INSERT INTO webhook_events (gateway, event_id, event_type, payload)
+         VALUES ('razorpay', $1, $2, $3)
+         ON CONFLICT (gateway, event_id) DO NOTHING RETURNING id`,
+        [String(eventId), evt.event || null, JSON.stringify(evt)]
+      );
+      if (!ins.rows.length) return res.status(200).json({ success: true, deduped: true });
+    } catch (e) {
+      console.warn('[webhook] idempotency store unavailable:', e?.message);
+    }
+
+    try {
+      await handleRazorpayEvent(evt);
+    } catch (e) {
+      console.error('[webhook] handler error:', e?.message);
+    }
+    // Always ack 200 once stored, so Razorpay stops retrying.
+    return res.status(200).json({ success: true });
   },
 
   // POST /api/v1/payments/amc/create-order

@@ -89,6 +89,10 @@ router.post('/refund', authenticate, requireRole('admin'), PaymentController.ref
 // form POST, no JWT possible). Signature-verified inside the handler.
 router.post('/easebuzz/callback', PaymentController.easebuzzCallback);
 
+// Razorpay webhook — server-to-server, no JWT. Verified against
+// RAZORPAY_WEBHOOK_SECRET (raw-body HMAC) inside the handler.
+router.post('/webhook/razorpay', PaymentController.razorpayWebhook);
+
 // AMC payment routes
 router.post('/amc/create-order', authenticate, requireRole('customer'), PaymentController.createAmcOrder);
 router.post('/amc/verify', authenticate, requireRole('customer'), PaymentController.verifyAmcPayment);

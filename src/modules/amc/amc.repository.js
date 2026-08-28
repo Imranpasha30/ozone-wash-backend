@@ -33,16 +33,62 @@ const AmcRepository = {
     return result.rows[0];
   },
 
-  // Find contract by ID
+  // Find contract by ID (with derived services_availed / services_remaining)
   findById: async (id) => {
     const result = await db.query(
-      `SELECT a.*, u.name as customer_name, u.phone as customer_phone
+      `SELECT a.*, u.name as customer_name, u.phone as customer_phone, u.email as customer_email,
+        (SELECT COUNT(*) FROM bookings b
+          WHERE b.customer_id = a.customer_id AND b.amc_plan IS NOT NULL
+            AND b.status = 'completed'
+            AND b.created_at >= a.start_date AND b.created_at <= a.end_date
+        )::int as services_availed,
+        GREATEST(0, COALESCE(a.services_per_year, 1) -
+          (SELECT COUNT(*) FROM bookings b
+            WHERE b.customer_id = a.customer_id AND b.amc_plan IS NOT NULL
+              AND b.status = 'completed'
+              AND b.created_at >= a.start_date AND b.created_at <= a.end_date
+          )
+        )::int as services_remaining
        FROM amc_contracts a
        JOIN users u ON u.id = a.customer_id
        WHERE a.id = $1`,
       [id]
     );
     return result.rows[0] || null;
+  },
+
+  // Active contracts whose term has fully ended (for expiry sweep).
+  getEndedActive: async () => {
+    const { rows } = await db.query(
+      `SELECT a.*, u.name as customer_name, u.phone as customer_phone, u.email as customer_email
+         FROM amc_contracts a JOIN users u ON u.id = a.customer_id
+        WHERE a.status = 'active' AND a.end_date < CURRENT_DATE`
+    );
+    return rows;
+  },
+
+  // Paid, active, auto-renew contracts within `days` of end_date that don't yet
+  // have a renewal contract created — candidates for auto-creating a renewal.
+  getAutoRenewCandidates: async (days) => {
+    const { rows } = await db.query(
+      `SELECT a.*, u.name as customer_name, u.phone as customer_phone, u.email as customer_email
+         FROM amc_contracts a JOIN users u ON u.id = a.customer_id
+        WHERE a.status = 'active'
+          AND a.auto_renew = true
+          AND a.payment_status = 'paid'
+          AND a.renewed_to_contract_id IS NULL
+          AND a.end_date <= CURRENT_DATE + ($1 || ' days')::interval
+          AND a.end_date >= CURRENT_DATE
+        ORDER BY a.end_date ASC`,
+      [String(days)]
+    );
+    return rows;
+  },
+
+  // Chain an expiring contract to its freshly-created renewal.
+  linkRenewal: async (oldId, newId) => {
+    await db.query(`UPDATE amc_contracts SET renewed_to_contract_id = $1, updated_at = NOW() WHERE id = $2`, [newId, oldId]);
+    await db.query(`UPDATE amc_contracts SET renewed_from_contract_id = $1, updated_at = NOW() WHERE id = $2`, [oldId, newId]);
   },
 
   // Find all contracts for a customer

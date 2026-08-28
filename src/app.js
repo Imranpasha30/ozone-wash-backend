@@ -118,7 +118,12 @@ const uploadLimiter = rateLimit({
 app.use('/api/v1/upload', uploadLimiter);
 
 // ── Body Parsing ──────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '2mb' })); // Tighter limit in production
+// Capture the raw body so gateway webhooks (Razorpay) can be signature-verified
+// against the exact bytes received — JSON.stringify(req.body) is NOT byte-stable.
+app.use(express.json({
+  limit: '2mb',
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 // ── Cache-Control for static assets ──────────────────────────────────────────

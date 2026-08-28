@@ -107,4 +107,27 @@ async function getPayment(paymentId) {
   }
 }
 
-module.exports = { name: 'razorpay', isConfigured, createOrder, verifyPayment, refundPayment, getPayment };
+/**
+ * Verify a Razorpay webhook: HMAC-SHA256 of the RAW request body with
+ * RAZORPAY_WEBHOOK_SECRET, compared to the X-Razorpay-Signature header.
+ * Returns true/false (never throws). In development with no secret set, we
+ * accept so the flow stays testable; in production a missing secret rejects.
+ */
+function verifyWebhookSignature(rawBody, signature) {
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  if (!secret || PLACEHOLDER_RE.test(secret)) {
+    return process.env.NODE_ENV === 'development';
+  }
+  try {
+    const expected = crypto.createHmac('sha256', secret)
+      .update(rawBody instanceof Buffer ? rawBody : Buffer.from(String(rawBody || '')))
+      .digest('hex');
+    const a = Buffer.from(expected);
+    const b = Buffer.from(String(signature || ''));
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { name: 'razorpay', isConfigured, createOrder, verifyPayment, refundPayment, getPayment, verifyWebhookSignature };

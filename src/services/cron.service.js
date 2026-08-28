@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const AmcRepository = require('../modules/amc/amc.repository');
+const AmcService = require('../modules/amc/amc.service');
 const NotificationService = require('./notification.service');
 const IncentivesCron = require('../cron/incentivesNightly');
 const EcoScoreCron = require('../cron/ecoscoreNightly');
@@ -16,6 +17,8 @@ const CronService = {
     cron.schedule('0 9 * * *', async () => {
       console.log('⏰ Running daily cron jobs...');
       await CronService.checkAmcRenewals();
+      await CronService.autoCreateRenewals();
+      await CronService.expireEndedContracts();
       await CronService.checkSlaBreaches();
       await CronService.expireCertificates();
       await CronService.processScheduledNotifications();
@@ -148,6 +151,48 @@ const CronService = {
       }
     } catch (err) {
       console.error('AMC renewal cron error:', err.message);
+    }
+  },
+
+  // Auto-create a payable renewal contract for paid, auto-renew contracts within
+  // 7 days of expiry, then nudge the customer to pay in one tap. (Silent
+  // auto-charge requires a saved mandate — Razorpay Subscriptions / UPI Autopay —
+  // which is a gateway-onboarding step; until then this is one-tap renewal.)
+  autoCreateRenewals: async () => {
+    try {
+      const candidates = await AmcRepository.getAutoRenewCandidates(7);
+      for (const contract of candidates) {
+        try {
+          const renewed = await AmcService.createRenewalFor(contract);
+          if (!renewed) continue;
+          const amountInr = Math.round((renewed.amount_paise || 0) / 100).toLocaleString('en-IN');
+          await NotificationService.notifyUser(
+            { id: contract.customer_id, fcm_token: null },
+            '🔄 Your AMC renewal is ready',
+            `Renew your ${contract.plan_type} plan for ₹${amountInr} to keep uninterrupted service.`,
+            { type: 'amc_renewal_ready', contract_id: renewed.id, amount_paise: renewed.amount_paise }
+          );
+          console.log(`🔁 Auto-created renewal ${renewed.id} for expiring contract ${contract.id}`);
+        } catch (e) {
+          console.warn('[cron] renewal creation failed for', contract.id, e?.message);
+        }
+      }
+    } catch (err) {
+      console.error('AMC auto-renewal cron error:', err.message);
+    }
+  },
+
+  // Expire active contracts whose term has fully ended.
+  expireEndedContracts: async () => {
+    try {
+      const ended = await AmcRepository.getEndedActive();
+      for (const c of ended) {
+        await AmcRepository.updateStatus(c.id, 'expired');
+        console.log(`⌛ AMC contract ${c.id} expired (end_date ${c.end_date})`);
+      }
+      if (ended.length) console.log(`⌛ Expired ${ended.length} ended AMC contract(s)`);
+    } catch (err) {
+      console.error('AMC expiry cron error:', err.message);
     }
   },
 

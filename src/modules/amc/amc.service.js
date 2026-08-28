@@ -178,6 +178,56 @@ const AmcService = {
     return renewed;
   },
 
+  // Create a payable renewal for an ending contract (matrix-aware pricing).
+  // Starts where the old term ends, mirrors tank size/count, and links the two.
+  // Returns the new pending_payment contract, or null if one already exists.
+  createRenewalFor: async (contract) => {
+    if (contract.renewed_to_contract_id) return null; // already renewed
+
+    const litres = Number(contract.tank_size_litres);
+    const tankCount = Math.max(1, parseInt(contract.tank_count, 10) || 1);
+    const matrixPlan = PricingService.normalizePlan(contract.plan_type);
+    const useMatrix = Number.isFinite(litres) && litres > 0 && !!matrixPlan;
+
+    let amountPaise = PLAN_PRICES[contract.plan_type] || contract.amount_paise || 0;
+    let servicesPerYear = contract.services_per_year || null;
+    let durationMonths = PLAN_DURATIONS[contract.plan_type] || 12;
+
+    if (useMatrix) {
+      const quote = await PricingService.quoteInvoice({
+        tanks: Array(tankCount).fill(litres),
+        plan: matrixPlan,
+        addon_codes: [],
+      });
+      amountPaise = quote.annual_service_total_paise;
+      servicesPerYear = quote.services_per_year;
+      durationMonths = 12;
+    }
+
+    const startDate = new Date(contract.end_date);
+    const endDate = new Date(startDate);
+    endDate.setMonth(endDate.getMonth() + durationMonths);
+
+    const renewed = await AmcRepository.create({
+      customer_id: contract.customer_id,
+      tank_ids: contract.tank_ids,
+      plan_type: contract.plan_type,
+      sla_terms: contract.sla_terms,
+      start_date: startDate,
+      end_date: endDate,
+      amount_paise: amountPaise,
+      status: 'pending_payment',
+      payment_status: 'pending',
+      tank_size_litres: useMatrix ? litres : null,
+      tank_count: tankCount,
+      services_per_year: servicesPerYear,
+      source: 'renewal',
+    });
+
+    await AmcRepository.linkRenewal(contract.id, renewed.id);
+    return renewed;
+  },
+
   // Cancel a contract
   cancelContract: async (contractId, adminId) => {
     const contract = await AmcRepository.findById(contractId);
