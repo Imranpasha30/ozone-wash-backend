@@ -2,8 +2,20 @@ const PaymentService = require('../../services/payment.service');
 const BookingRepository = require('../bookings/booking.repository');
 const AmcRepository = require('../amc/amc.repository');
 const NotificationService = require('../../services/notification.service');
+const InvoiceService = require('../invoices/invoice.service');
 const { sendSuccess, sendError } = require('../../utils/response');
 const db = require('../../config/db');
+
+/** Issue a GST invoice on payment success — fire-and-forget, never blocks. */
+const issueBookingInvoice = (bookingId, result) =>
+  InvoiceService.createInvoiceForBooking(bookingId, {
+    gateway: result?.gateway, payment_ref: result?.payment_id,
+  }).catch((e) => console.error('[invoice] booking invoice failed:', e?.message));
+
+const issueAmcInvoice = (contractId, result) =>
+  InvoiceService.createInvoiceForAmc(contractId, {
+    gateway: result?.gateway, payment_ref: result?.payment_id,
+  }).catch((e) => console.error('[invoice] AMC invoice failed:', e?.message));
 
 /** Customer contact details for gateways that need them (Easebuzz). */
 const customerForUser = async (userId) => {
@@ -107,6 +119,9 @@ const PaymentController = {
       const customer = { phone: booking.customer_phone, fcm_token: null };
       NotificationService.onPaymentConfirmed(customer, booking).catch(() => {});
 
+      // GST tax invoice (covers the linked AMC too when purchased at checkout).
+      issueBookingInvoice(booking_id, result);
+
       return sendSuccess(res, {
         payment_status: 'paid',
         gateway: result.gateway,
@@ -139,6 +154,7 @@ const PaymentController = {
         });
         await BookingRepository.updateStatus(rows[0].id, 'confirmed');
         await activateLinkedAmc(booking, { order_id: p.txnid, payment_id: result.payment_id });
+        issueBookingInvoice(rows[0].id, result);
         settled = true;
       } else {
         const amc = await db.query(
@@ -151,6 +167,7 @@ const PaymentController = {
             payment_status: 'paid',
           });
           await AmcRepository.updateStatus(amc.rows[0].id, 'active');
+          issueAmcInvoice(amc.rows[0].id, result);
           settled = true;
         }
       }
@@ -262,6 +279,9 @@ const PaymentController = {
       });
 
       await AmcRepository.updateStatus(contract_id, 'active');
+
+      // GST tax invoice for the standalone AMC contract.
+      issueAmcInvoice(contract_id, result);
 
       return sendSuccess(res, {
         payment_status: 'paid',
