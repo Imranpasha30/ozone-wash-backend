@@ -22,8 +22,10 @@ const server = app.listen(PORT, () => {
     if (payu.isConfigured()) {
       console.log(`   Gateway: payu | host: ${payu.paymentBase()} | prod: ${payu.isProd()}`);
       if (process.env.NODE_ENV === 'production' && !payu.isProd()) {
-        console.error('🚨 FATAL: NODE_ENV=production but PAYU_ENV is not prod — refusing to start against the PayU sandbox. Set PAYU_ENV=prod.');
-        process.exit(1);
+        // Pre-launch, production intentionally runs against the PayU sandbox.
+        // Warn loudly (so a real go-live can't silently stay on test) but never
+        // block boot — set PAYU_ENV=prod when live creds are in place.
+        console.warn('⚠️  NODE_ENV=production but PAYU_ENV is not prod — running against the PayU SANDBOX (test.payu.in). Set PAYU_ENV=prod for LIVE payments.');
       }
     }
     const testAmt = Number(process.env.PAYMENT_TEST_AMOUNT_PAISE);
