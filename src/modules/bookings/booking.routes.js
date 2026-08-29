@@ -41,6 +41,9 @@ const createBookingValidation = [
   body('payment_method')
     .notEmpty().withMessage('Payment method is required')
     .isIn(['online', 'upi', 'card', 'wallet', 'cod']).withMessage('Invalid payment method'),
+  body('contact_phone')
+    .trim().notEmpty().withMessage('Contact phone is required')
+    .matches(/^[6-9]\d{9}$/).withMessage('Enter a valid 10-digit mobile number'),
   body('addons')
     .optional()
     .isArray().withMessage('Addons must be an array'),
