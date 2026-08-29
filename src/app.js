@@ -45,13 +45,29 @@ const corsOriginCheck = (origin, callback) => {
   callback(new Error(`CORS: origin '${origin}' not allowed`));
 };
 
-app.use(cors({
+const corsMiddleware = cors({
   origin: corsOriginCheck,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: false,
   maxAge: 86400, // Browser caches preflight for 24h — reduces OPTIONS requests
-}));
+});
+
+// Payment-gateway callbacks/webhooks are form POSTs whose Origin is the gateway's
+// OWN domain (e.g. https://test.payu.in) — not an app origin. They carry no JWT
+// and are hash/signature-verified inside their handlers, so the browser-origin
+// allowlist adds no security here; it only makes corsOriginCheck THROW → 500 and
+// silently drops the settlement. Bypass CORS for these routes only; every other
+// route still goes through the strict allowlist.
+const CORS_EXEMPT_PATHS = new Set([
+  '/api/v1/payments/payu/callback',
+  '/api/v1/payments/easebuzz/callback',
+  '/api/v1/payments/webhook/razorpay',
+]);
+app.use((req, res, next) => {
+  if (CORS_EXEMPT_PATHS.has(req.path)) return next();
+  return corsMiddleware(req, res, next);
+});
 
 // ── Compression ───────────────────────────────────────────────────────────────
 // Gzip/Brotli — cuts JSON response size by ~70%. Critical for mobile data costs.
