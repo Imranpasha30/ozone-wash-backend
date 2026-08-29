@@ -27,6 +27,21 @@ const customerForUser = async (userId) => {
   } catch { return {}; }
 };
 
+/**
+ * TEST-ONLY charge override. When PAYMENT_TEST_AMOUNT_PAISE is set (e.g. 100 for
+ * a ₹1 smoke test) the gateway is charged that amount instead of the real one.
+ * The booking/contract amount and the GST invoice are UNCHANGED — this only
+ * affects what the gateway captures. Leave the env var UNSET in production.
+ */
+const chargeAmountPaise = (realPaise) => {
+  const t = Number(process.env.PAYMENT_TEST_AMOUNT_PAISE);
+  if (Number.isFinite(t) && t > 0) {
+    console.warn(`⚠️  [PAYMENT_TEST_AMOUNT] charging ₹${t / 100} instead of ₹${realPaise / 100} (test override)`);
+    return t;
+  }
+  return realPaise;
+};
+
 /** Booking payments can carry an AMC-at-checkout purchase — activate it. */
 const activateLinkedAmc = async (booking, paymentRefs) => {
   if (!booking?.amc_contract_id) return;
@@ -131,7 +146,7 @@ const PaymentController = {
       }
 
       const customer = await customerForUser(req.user.id);
-      const order = await PaymentService.createOrder(booking.amount_paise, booking_id, customer);
+      const order = await PaymentService.createOrder(chargeAmountPaise(booking.amount_paise), booking_id, customer);
 
       await BookingRepository.updatePayment(booking_id, {
         razorpay_order_id: order.order_id,
@@ -451,7 +466,7 @@ const PaymentController = {
       }
 
       const customer = await customerForUser(req.user.id);
-      const order = await PaymentService.createOrder(contract.amount_paise, contract_id, customer);
+      const order = await PaymentService.createOrder(chargeAmountPaise(contract.amount_paise), contract_id, customer);
 
       await AmcRepository.updatePayment(contract_id, {
         razorpay_order_id: order.order_id,
