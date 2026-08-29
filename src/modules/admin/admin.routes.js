@@ -215,6 +215,110 @@ router.get('/customers/:id/stats', adminOnly, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── Financial ledger — complete money IN / OUT ────────────────────────────
+// GET /api/v1/admin/ledger?from=YYYY-MM-DD&to=YYYY-MM-DD&limit=200
+// One consolidated view of every cash movement in the window: customer
+// payments IN (captured card/UPI + collected COD), refunds OUT, crew payouts
+// OUT (batches actually marked paid), the current pending-payout liability,
+// an incentive/bonus accrual breakdown, and a unified time-ordered feed.
+// All money in paise. Net = gross_in − refunds − crew_payouts.
+router.get('/ledger', adminOnly, async (req, res, next) => {
+  try {
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const now = new Date();
+    const to = String(req.query.to || iso(now)).slice(0, 10);
+    const from = String(req.query.from || iso(new Date(now.getTime() - 29 * 86400000))).slice(0, 10);
+    const limit = Math.min(parseInt(req.query.limit || '200', 10) || 200, 500);
+
+    const [inAgg, refAgg, payAgg, pendAgg, bonusRows, txRows] = await Promise.all([
+      db.query(
+        `SELECT COALESCE(SUM(amount_paise),0)::bigint AS gross, COUNT(*)::int AS cnt,
+                COALESCE(SUM(gst_paise),0)::bigint AS gst
+           FROM payments
+          WHERE status IN ('captured','cod_collected')
+            AND COALESCE(captured_at, created_at) >= $1::date
+            AND COALESCE(captured_at, created_at) <  ($2::date + INTERVAL '1 day')`,
+        [from, to]
+      ),
+      db.query(
+        `SELECT COALESCE(SUM(amount_paise),0)::bigint AS amt, COUNT(*)::int AS cnt
+           FROM payment_refunds
+          WHERE created_at >= $1::date AND created_at < ($2::date + INTERVAL '1 day')`,
+        [from, to]
+      ),
+      db.query(
+        `SELECT COALESCE(SUM(total_paise),0)::bigint AS amt, COUNT(*)::int AS cnt
+           FROM payout_batches
+          WHERE status='paid' AND paid_at >= $1::date AND paid_at < ($2::date + INTERVAL '1 day')`,
+        [from, to]
+      ),
+      db.query(
+        `SELECT COALESCE(SUM(total_paise),0)::bigint AS amt
+           FROM payout_batches WHERE status IN ('open','frozen')`
+      ),
+      db.query(
+        `SELECT COALESCE(reason,'other') AS reason,
+                COALESCE(SUM(amount_paise),0)::bigint AS amt, COUNT(*)::int AS cnt
+           FROM incentives
+          WHERE created_at >= $1::date AND created_at < ($2::date + INTERVAL '1 day')
+          GROUP BY COALESCE(reason,'other') ORDER BY amt DESC`,
+        [from, to]
+      ),
+      db.query(
+        `(SELECT COALESCE(p.captured_at, p.created_at) AS ts, 'in' AS direction, 'payment' AS type,
+                 p.amount_paise, COALESCE(u.name, u.phone) AS party,
+                 COALESCE(p.booking_id::text, p.amc_contract_id::text) AS ref,
+                 COALESCE(p.method, p.status) AS detail
+            FROM payments p LEFT JOIN users u ON u.id = p.user_id
+           WHERE p.status IN ('captured','cod_collected')
+             AND COALESCE(p.captured_at, p.created_at) >= $1::date
+             AND COALESCE(p.captured_at, p.created_at) <  ($2::date + INTERVAL '1 day'))
+         UNION ALL
+         (SELECT pr.created_at AS ts, 'out' AS direction, 'refund' AS type,
+                 pr.amount_paise, COALESCE(u.name, u.phone) AS party,
+                 COALESCE(pr.booking_id::text, pr.amc_contract_id::text) AS ref,
+                 COALESCE(pr.reason, pr.gateway) AS detail
+            FROM payment_refunds pr
+            LEFT JOIN bookings b ON b.id = pr.booking_id
+            LEFT JOIN users u ON u.id = b.customer_id
+           WHERE pr.created_at >= $1::date AND pr.created_at < ($2::date + INTERVAL '1 day'))
+         UNION ALL
+         (SELECT pb.paid_at AS ts, 'out' AS direction, 'crew_payout' AS type,
+                 pb.total_paise AS amount_paise, COALESCE(u.name, u.phone) AS party,
+                 pb.payment_ref AS ref, to_char(pb.month, 'Mon YYYY') AS detail
+            FROM payout_batches pb LEFT JOIN users u ON u.id = pb.agent_id
+           WHERE pb.status='paid' AND pb.paid_at >= $1::date AND pb.paid_at < ($2::date + INTERVAL '1 day'))
+         ORDER BY ts DESC LIMIT $3`,
+        [from, to, limit]
+      ),
+    ]);
+
+    const grossIn = Number(inAgg.rows[0].gross);
+    const refunds = Number(refAgg.rows[0].amt);
+    const payouts = Number(payAgg.rows[0].amt);
+
+    return sendSuccess(res, {
+      range: { from, to },
+      summary: {
+        gross_in_paise: grossIn,
+        payments_count: inAgg.rows[0].cnt,
+        gst_collected_paise: Number(inAgg.rows[0].gst),
+        refunds_out_paise: refunds,
+        refunds_count: refAgg.rows[0].cnt,
+        crew_payouts_paise: payouts,
+        crew_payouts_count: payAgg.rows[0].cnt,
+        pending_payouts_paise: Number(pendAgg.rows[0].amt),
+        net_paise: grossIn - refunds - payouts,
+      },
+      bonuses_by_reason: bonusRows.rows.map((r) => ({ reason: r.reason, amount_paise: Number(r.amt), count: r.cnt })),
+      transactions: txRows.rows.map((r) => ({
+        ts: r.ts, direction: r.direction, type: r.type,
+        amount_paise: Number(r.amount_paise), party: r.party || '—', ref: r.ref, detail: r.detail,
+      })),
+    });
+  } catch (err) { next(err); }
+});
+
 // ── Incentive payout management (mounted at /api/v1/admin/incentives) ──────
 router.use('/incentives', incentiveAdminRouter);
 
