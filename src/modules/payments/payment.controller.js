@@ -5,6 +5,7 @@ const NotificationService = require('../../services/notification.service');
 const InvoiceService = require('../invoices/invoice.service');
 const { sendSuccess, sendError } = require('../../utils/response');
 const db = require('../../config/db');
+const PaymentLedger = require('./payment.ledger');
 
 /** Issue a GST invoice on payment success — fire-and-forget, never blocks. */
 const issueBookingInvoice = (bookingId, result) =>
@@ -83,6 +84,7 @@ const settleByOrderId = async (orderId, paymentId, gateway = 'razorpay') => {
     await db.query(`UPDATE jobs SET status = 'scheduled' WHERE booking_id = $1 AND status = 'cancelled'`, [b.rows[0].id]).catch(() => {});
     await activateLinkedAmc({ id: b.rows[0].id, amc_contract_id: b.rows[0].amc_contract_id },
       { order_id: orderId, payment_id: paymentId });
+    PaymentLedger.markCaptured(orderId, { paymentId, gateway });
     issueBookingInvoice(b.rows[0].id, { gateway, payment_id: paymentId });
     console.log(`✅ [gw:${gateway}] booking ${b.rows[0].id} settled via capture`);
     return;
@@ -102,6 +104,7 @@ const settleByOrderId = async (orderId, paymentId, gateway = 'razorpay') => {
   );
   if (c.rows.length) {
     await AmcRepository.updateStatus(c.rows[0].id, 'active');
+    PaymentLedger.markCaptured(orderId, { paymentId, gateway });
     issueAmcInvoice(c.rows[0].id, { gateway, payment_id: paymentId });
     console.log(`✅ [gw:${gateway}] AMC ${c.rows[0].id} settled via capture`);
   }
@@ -148,7 +151,9 @@ const settlePayuFromCallback = async (p) => {
   } catch (e) {
     console.warn('[payu] callback verify failed:', e?.message);
   }
-  return { status: settled ? 'success' : String(p.status || 'failure').toLowerCase(), bookingId, contractId };
+  const status = settled ? 'success' : String(p.status || 'failure').toLowerCase();
+  if (status !== 'success') PaymentLedger.markFailed(p.txnid, `callback ${p.status || 'unknown'}`);
+  return { status, bookingId, contractId };
 };
 
 /** Web-app return URL (APP_WEB_URL + result query). '' when APP_WEB_URL is unset. */
@@ -203,6 +208,10 @@ const PaymentController = {
         razorpay_order_id: order.order_id,
         razorpay_payment_id: null,
         payment_status: 'pending',
+      });
+      PaymentLedger.recordCreated({
+        userId: req.user.id, bookingId: booking_id, orderId: order.order_id,
+        amountPaise: booking.amount_paise, method: booking.payment_method, gateway: order.gateway,
       });
 
       return sendSuccess(res, {
@@ -272,6 +281,7 @@ const PaymentController = {
       await BookingRepository.updateStatus(booking_id, 'confirmed');
       // Reinstate the holding job if the 8-min sweep cancelled it (late payment).
       await db.query(`UPDATE jobs SET status = 'scheduled' WHERE booking_id = $1 AND status = 'cancelled'`, [booking_id]).catch(() => {});
+      PaymentLedger.markCaptured(providedOrderId, { paymentId: result.payment_id, gateway: result.gateway });
 
       // AMC purchased at checkout → activate; this booking = visit #1 of the plan.
       await activateLinkedAmc(booking, { order_id: providedOrderId, payment_id: result.payment_id });
@@ -540,6 +550,10 @@ const PaymentController = {
         razorpay_order_id: order.order_id,
         razorpay_payment_id: null,
         payment_status: 'pending',
+      });
+      PaymentLedger.recordCreated({
+        userId: req.user.id, contractId: contract_id, orderId: order.order_id,
+        amountPaise: contract.amount_paise, method: 'amc', gateway: order.gateway,
       });
 
       return sendSuccess(res, {

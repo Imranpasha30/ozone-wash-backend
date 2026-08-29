@@ -6,6 +6,7 @@ const IncentivesCron = require('../cron/incentivesNightly');
 const EcoScoreCron = require('../cron/ecoscoreNightly');
 const AdminAlertsService = require('../modules/admin-alerts/admin-alerts.service');
 const db = require('../config/db');
+const PaymentLedger = require('../modules/payments/payment.ledger');
 
 const CronService = {
 
@@ -254,9 +255,10 @@ const CronService = {
             AND payment_method <> 'cod'
             AND amount_paise > 0
             AND created_at < NOW() - INTERVAL '8 minutes'
-          RETURNING id, amc_contract_id`
+          RETURNING id, amc_contract_id, razorpay_order_id`
       );
       for (const b of rows) {
+        if (b.razorpay_order_id) PaymentLedger.markFailed(b.razorpay_order_id, 'hold expired');
         // Free the van slot — capacity counts scheduled jobs, so cancelling the
         // holding job releases the window for other customers.
         await db.query(
