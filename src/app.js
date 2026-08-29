@@ -222,6 +222,15 @@ app.get('/verify/:certId', async (req, res) => {
 </div></body></html>`);
 });
 
+// In-app payment-return sentinel. The mobile checkout WebView intercepts this
+// navigation and routes in-app (it never actually loads it). Shown only if a
+// plain browser happens to land here.
+app.get('/payu-app-return', (req, res) => {
+  const ok = String(req.query.ozw_payment) === 'success';
+  res.set('Content-Type', 'text/html').send(`<!doctype html><html><body style="font-family:sans-serif;text-align:center;padding-top:40vh;background:#fff">
+<p>${ok ? '✅ Payment successful.' : '❌ Payment failed.'} You can return to the Ozone Wash app.</p></body></html>`);
+});
+
 // ── API Routes ────────────────────────────────────────────────────────────────
 app.use('/api/v1', routes);
 

@@ -162,6 +162,18 @@ const buildWebReturnUrl = (status, bookingId, contractId, txnid) => {
   return `${webBase}/?${qs.toString()}`;
 };
 
+/** In-app (mobile WebView) return sentinel on APP_URL. The RN WebView intercepts
+ *  this navigation via onShouldStartLoadWithRequest (it never actually loads) and
+ *  routes in-app — reliable even when the callback's postMessage is dropped. */
+const buildAppReturnUrl = (status, bookingId, contractId, txnid) => {
+  const base = (process.env.APP_URL || '').replace(/\/+$/, '');
+  const qs = new URLSearchParams({ ozw_payment: status });
+  if (bookingId) qs.set('booking_id', bookingId);
+  if (contractId) qs.set('contract_id', contractId);
+  if (txnid) qs.set('txnid', txnid);
+  return `${base}/payu-app-return?${qs.toString()}`;
+};
+
 const PaymentController = {
 
   // POST /api/v1/payments/create-order
@@ -423,22 +435,18 @@ const PaymentController = {
     const p = req.body || {};
     const { status, bookingId, contractId } = await settlePayuFromCallback(p);
     const payload = JSON.stringify({ source: 'payu', status, txnid: p.txnid || null, booking_id: bookingId, contract_id: contractId });
-
-    // Mobile app WebView path: relay the result to the RN layer via postMessage.
-    // A JS redirect fallback stays in case a browser ever hits this legacy
-    // callback directly — but web checkout now uses /payu/callback/web (302).
-    const webReturn = buildWebReturnUrl(status, bookingId, contractId, p.txnid);
+    const appReturn = buildAppReturnUrl(status, bookingId, contractId, p.txnid);
     res.set('Content-Type', 'text/html').send(`<!doctype html>
 <html><body style="font-family:sans-serif;text-align:center;padding-top:40vh;background:#fff">
 <p>${status === 'success' ? '✅ Payment successful — returning to app…' : '❌ Payment failed — returning to app…'}</p>
 <script>
   var msg = ${JSON.stringify(payload)};
-  if (window.ReactNativeWebView) {
-    window.ReactNativeWebView.postMessage(msg);                 // mobile app WebView
-  } else {
-    var ret = ${JSON.stringify(webReturn)};
-    if (ret) { window.location.replace(ret); }                  // legacy web fallback
-  }
+  // Fast path: notify the RN layer directly.
+  if (window.ReactNativeWebView) { try { window.ReactNativeWebView.postMessage(msg); } catch (e) {} }
+  // Reliable path: navigate to the in-app return sentinel. The RN WebView
+  // intercepts this (onShouldStartLoadWithRequest) and routes in-app — so the
+  // payment completes even when postMessage is dropped (Android WebView quirk).
+  setTimeout(function(){ window.location.replace(${JSON.stringify(appReturn)}); }, 400);
 </script>
 </body></html>`);
   },
