@@ -500,6 +500,49 @@ const PaymentController = {
 </body></html>`);
   },
 
+  // POST /api/v1/payments/payu/webhook  (no auth — reverse-hash-verified, S2S)
+  // PayU server-to-server webhook. Fires directly from PayU on payment events,
+  // INDEPENDENT of the browser/WebView surl/furl callback — so a captured payment
+  // still settles even if the app was killed before the browser callback landed
+  // (closes the Android-WebView "money taken, no booking" gap). Configure this URL
+  // in PayU Dashboard → Developers → Webhooks (a SEPARATE one for TEST and LIVE).
+  // Idempotent: a re-delivery and a racing browser callback settle at most once.
+  payuWebhook: async (req, res) => {
+    const p = req.body || {};
+    console.log('[payu webhook]', JSON.stringify({ txnid: p.txnid, mihpayid: p.mihpayid, status: p.status, amount: p.amount, event: p.event || p.eventType }));
+
+    // PayU verifies a new webhook URL with a dummy POST carrying no txnid — ack it.
+    if (!p.txnid) return res.status(200).json({ received: true });
+
+    // Dedup on txnid+status (webhooks can be re-delivered). Settlement is atomic +
+    // idempotent regardless, so this is an optimization, not the safety net.
+    const eventId = `${p.txnid}_${String(p.status || '').toLowerCase()}`;
+    try {
+      const seen = await db.query(`SELECT 1 FROM webhook_events WHERE gateway='payu' AND event_id=$1 LIMIT 1`, [eventId]);
+      if (seen.rows.length) return res.status(200).json({ received: true, deduped: true });
+    } catch (_) { /* fall through — settlement is idempotent anyway */ }
+
+    // Verify the reverse hash + settle (shared with the browser callback path).
+    const { status } = await settlePayuFromCallback(p);
+
+    // If PayU reports success but we couldn't settle (transient DB error, or a
+    // salt/config mismatch), return 5xx so PayU RETRIES — do NOT record the event.
+    if (String(p.status || '').toLowerCase() === 'success' && status !== 'success') {
+      console.error(`[payu webhook] success event ${p.txnid} did not settle — asking PayU to retry`);
+      return res.status(500).json({ received: false });
+    }
+
+    try {
+      await db.query(
+        `INSERT INTO webhook_events (gateway, event_id, event_type, payload)
+         VALUES ('payu', $1, $2, $3) ON CONFLICT (gateway, event_id) DO NOTHING`,
+        [eventId, String(p.status || '').toLowerCase(), JSON.stringify(p)]
+      );
+    } catch (e) { console.warn('[payu webhook] could not record event:', e?.message); }
+
+    return res.status(200).json({ received: true });
+  },
+
   // POST /api/v1/payments/webhook/razorpay  (no auth — signature-verified)
   // Belt-and-suspenders settlement: even if the app closes mid-checkout, the
   // captured payment settles the booking/AMC and issues the invoice.

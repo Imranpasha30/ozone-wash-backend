@@ -62,6 +62,7 @@ const corsMiddleware = cors({
 const CORS_EXEMPT_PATHS = new Set([
   '/api/v1/payments/payu/callback',
   '/api/v1/payments/payu/callback/web',
+  '/api/v1/payments/payu/webhook',
   '/api/v1/payments/easebuzz/callback',
   '/api/v1/payments/webhook/razorpay',
 ]);

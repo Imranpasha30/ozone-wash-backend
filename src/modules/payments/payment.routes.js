@@ -95,6 +95,11 @@ router.post('/payu/callback', PaymentController.payuCallback);
 // Web checkout variant — settles identically but replies with a server-side 302
 // back to the web app instead of a postMessage page.
 router.post('/payu/callback/web', PaymentController.payuCallbackWeb);
+// PayU server-to-server webhook — fires directly from PayU (not the browser), so a
+// captured payment settles even if the app/WebView died before the surl/furl POST.
+// Reverse-hash-verified + idempotent inside the handler. Set the URL in PayU
+// Dashboard → Developers → Webhooks (separate TEST and LIVE URLs).
+router.post('/payu/webhook', PaymentController.payuWebhook);
 
 // Razorpay webhook — server-to-server, no JWT. Verified against
 // RAZORPAY_WEBHOOK_SECRET (raw-body HMAC) inside the handler.
