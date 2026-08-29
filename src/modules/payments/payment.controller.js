@@ -138,6 +138,25 @@ const settlePayuFromCallback = async (p) => {
   let settled = false, bookingId = null, contractId = null;
   try {
     const result = PaymentService.verifyPayment({ ...p, gateway: 'payu' });
+    // Defense-in-depth amount check: the reverse hash already binds `amount`, but
+    // independently refuse to settle if the captured amount is below what we
+    // recorded for this order. The configured ₹1 test override is whitelisted.
+    const amt = await db.query(
+      `SELECT amount_paise FROM (
+         SELECT amount_paise FROM bookings      WHERE razorpay_order_id = $1
+         UNION ALL
+         SELECT amount_paise FROM amc_contracts WHERE razorpay_order_id = $1
+       ) u LIMIT 1`, [p.txnid]
+    );
+    const expectedPaise = amt.rows.length ? Number(amt.rows[0].amount_paise) : null;
+    const capturedPaise = Math.round(Number(p.amount) * 100);
+    const testPaise = Number(process.env.PAYMENT_TEST_AMOUNT_PAISE);
+    const testOk = Number.isFinite(testPaise) && testPaise > 0 && capturedPaise === testPaise;
+    if (expectedPaise != null && Number.isFinite(capturedPaise) && capturedPaise < expectedPaise && !testOk) {
+      console.error(`🚨 [payu] amount mismatch for ${p.txnid}: captured ₹${capturedPaise / 100} < expected ₹${expectedPaise / 100} — refusing to settle`);
+      PaymentLedger.markFailed(p.txnid, `amount mismatch: captured ${capturedPaise} < expected ${expectedPaise}`);
+      return { status: 'failure', bookingId: null, contractId: null };
+    }
     // txnid was saved as the order id on the booking/contract at order time.
     await settleByOrderId(p.txnid, result.payment_id, 'payu');
     const b = await db.query(`SELECT id, payment_status FROM bookings WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
@@ -421,6 +440,9 @@ const PaymentController = {
         [newRefunded, newStatus, idVal]
       );
       await client.query('COMMIT');
+      // Flip the ledger row so MIS/reporting stops counting refunded gross as
+      // revenue (best-effort, post-commit so it never rolls back the refund).
+      if (newStatus === 'refunded') PaymentLedger.markRefunded(oid);
 
       return sendSuccess(res, {
         refund,

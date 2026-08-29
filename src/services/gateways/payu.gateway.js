@@ -32,7 +32,10 @@ const isConfigured = () =>
   !!process.env.PAYU_KEY && !!process.env.PAYU_SALT &&
   !PLACEHOLDER_RE.test(process.env.PAYU_KEY) && !PLACEHOLDER_RE.test(process.env.PAYU_SALT);
 
-const isProd = () => (process.env.PAYU_ENV || 'test').toLowerCase() === 'prod';
+const isProd = () => {
+  const e = (process.env.PAYU_ENV || '').trim().toLowerCase();
+  return e === 'prod' || e === 'production' || e === 'live';
+};
 // Hosted payment page ("_payment"); merchant API ("postservice") for refunds.
 const paymentBase = () => (isProd() ? 'https://secure.payu.in' : 'https://test.payu.in');
 const apiBase = () => (isProd() ? 'https://info.payu.in' : 'https://test.payu.in');
@@ -164,4 +167,4 @@ async function refundPayment(paymentId, amountPaise) {
   }
 }
 
-module.exports = { name: 'payu', isConfigured, createOrder, verifyPayment, refundPayment };
+module.exports = { name: 'payu', isConfigured, isProd, paymentBase, apiBase, createOrder, verifyPayment, refundPayment };
