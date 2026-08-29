@@ -99,8 +99,8 @@ const BookingService = {
       throw { status: 400, message: 'Invalid tank type. Must be overhead, underground, sump or sintex.' };
     }
 
-    // 2. Validate payment method
-    const validPayments = ['upi', 'card', 'wallet', 'cod'];
+    // 2. Validate payment method ('online' = Pay Online via PayU)
+    const validPayments = ['online', 'upi', 'card', 'wallet', 'cod'];
     if (!validPayments.includes(data.payment_method)) {
       throw { status: 400, message: 'Invalid payment method.' };
     }
