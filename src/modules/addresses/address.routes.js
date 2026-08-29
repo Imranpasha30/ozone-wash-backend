@@ -23,6 +23,8 @@ const addressValidation = [
     .isLength({ min: 10, max: 500 }).withMessage('Address must be 10–500 characters'),
   body('lat').optional({ nullable: true }).isFloat({ min: -90, max: 90 }),
   body('lng').optional({ nullable: true }).isFloat({ min: -180, max: 180 }),
+  body('phone').optional({ nullable: true, checkFalsy: true }).matches(/^[6-9]\d{9}$/).withMessage('Enter a valid 10-digit mobile number'),
+  body('tanks').optional({ nullable: true }).isArray({ max: 20 }).withMessage('tanks must be an array'),
 ];
 
 const handle = (fn) => async (req, res, next) => {

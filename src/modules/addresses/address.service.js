@@ -13,7 +13,7 @@ const AddressService = {
 
   list: async (customerId) => {
     const { rows } = await db.query(
-      `SELECT id, label, address, lat, lng, is_default, created_at, updated_at
+      `SELECT id, label, address, phone, tanks, lat, lng, is_default, created_at, updated_at
          FROM customer_addresses
         WHERE customer_id = $1 AND deleted_at IS NULL
         ORDER BY is_default DESC, updated_at DESC`,
@@ -22,7 +22,7 @@ const AddressService = {
     return rows;
   },
 
-  create: async (customerId, { label, address, lat, lng, is_default }) => {
+  create: async (customerId, { label, address, phone, tanks, lat, lng, is_default }) => {
     const { rows: existing } = await db.query(
       `SELECT COUNT(*)::int AS n FROM customer_addresses
         WHERE customer_id = $1 AND deleted_at IS NULL`,
@@ -42,20 +42,24 @@ const AddressService = {
     }
 
     const { rows } = await db.query(
-      `INSERT INTO customer_addresses (customer_id, label, address, lat, lng, is_default)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, label, address, lat, lng, is_default, created_at, updated_at`,
-      [customerId, label.trim(), address.trim(), lat ?? null, lng ?? null, makeDefault]
+      `INSERT INTO customer_addresses (customer_id, label, address, phone, tanks, lat, lng, is_default)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, label, address, phone, tanks, lat, lng, is_default, created_at, updated_at`,
+      [customerId, label.trim(), address.trim(),
+       phone ? String(phone).trim() : null, tanks ? JSON.stringify(tanks) : null,
+       lat ?? null, lng ?? null, makeDefault]
     );
     return rows[0];
   },
 
-  update: async (customerId, addressId, { label, address, lat, lng }) => {
+  update: async (customerId, addressId, { label, address, phone, tanks, lat, lng }) => {
     const sets = ['updated_at = NOW()'];
     const params = [];
     let i = 1;
     if (label !== undefined)   { sets.push(`label = $${i++}`);   params.push(String(label).trim()); }
     if (address !== undefined) { sets.push(`address = $${i++}`); params.push(String(address).trim()); }
+    if (phone !== undefined)   { sets.push(`phone = $${i++}`);   params.push(phone ? String(phone).trim() : null); }
+    if (tanks !== undefined)   { sets.push(`tanks = $${i++}`);   params.push(tanks ? JSON.stringify(tanks) : null); }
     if (lat !== undefined)     { sets.push(`lat = $${i++}`);     params.push(lat); }
     if (lng !== undefined)     { sets.push(`lng = $${i++}`);     params.push(lng); }
 
@@ -63,7 +67,7 @@ const AddressService = {
     const { rows } = await db.query(
       `UPDATE customer_addresses SET ${sets.join(', ')}
         WHERE customer_id = $${i++} AND id = $${i} AND deleted_at IS NULL
-        RETURNING id, label, address, lat, lng, is_default, created_at, updated_at`,
+        RETURNING id, label, address, phone, tanks, lat, lng, is_default, created_at, updated_at`,
       params
     );
     if (!rows.length) throw { status: 404, message: 'Address not found.' };
