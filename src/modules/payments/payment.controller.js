@@ -375,28 +375,54 @@ const PaymentController = {
   payuCallback: async (req, res) => {
     const p = req.body || {};
     let settled = false;
+    let bookingId = null;
+    let contractId = null;
     try {
       const result = PaymentService.verifyPayment({ ...p, gateway: 'payu' });
       // txnid was saved as the order id on the booking/contract at order time.
       await settleByOrderId(p.txnid, result.payment_id, 'payu');
-      const b = await db.query(`SELECT payment_status FROM bookings WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
-      if (b.rows.length) settled = b.rows[0].payment_status === 'paid';
-      else {
-        const c = await db.query(`SELECT payment_status FROM amc_contracts WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
-        settled = c.rows.length ? c.rows[0].payment_status === 'paid' : false;
+      const b = await db.query(`SELECT id, payment_status FROM bookings WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
+      if (b.rows.length) {
+        bookingId = b.rows[0].id;
+        settled = b.rows[0].payment_status === 'paid';
+      } else {
+        const c = await db.query(`SELECT id, payment_status FROM amc_contracts WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
+        if (c.rows.length) { contractId = c.rows[0].id; settled = c.rows[0].payment_status === 'paid'; }
       }
     } catch (e) {
       console.warn('[payu] callback verify failed:', e?.message);
     }
 
     const status = settled ? 'success' : (String(p.status || 'failure').toLowerCase());
-    const payload = JSON.stringify({ source: 'payu', status, txnid: p.txnid || null });
+    const payload = JSON.stringify({ source: 'payu', status, txnid: p.txnid || null, booking_id: bookingId, contract_id: contractId });
+
+    // Web (full-page redirect) return: to reach PayU's hosted page the browser
+    // navigated AWAY from the app, so postMessage (the mobile WebView path below)
+    // can't reach it. Instead bounce the browser back to the web app with the
+    // result in the query string; the app reads it on startup and routes to the
+    // confirmation screen. Only active when APP_WEB_URL is set (e.g. the web
+    // app's origin); otherwise web just shows the static page (no regression).
+    const webBase = (process.env.APP_WEB_URL || '').replace(/\/+$/, '');
+    let webReturn = '';
+    if (webBase) {
+      const qs = new URLSearchParams({ ozw_payment: status });
+      if (bookingId) qs.set('booking_id', bookingId);
+      if (contractId) qs.set('contract_id', contractId);
+      if (p.txnid) qs.set('txnid', p.txnid);
+      webReturn = `${webBase}/?${qs.toString()}`;
+    }
+
     res.set('Content-Type', 'text/html').send(`<!doctype html>
 <html><body style="font-family:sans-serif;text-align:center;padding-top:40vh;background:#fff">
 <p>${status === 'success' ? '✅ Payment successful — returning to app…' : '❌ Payment failed — returning to app…'}</p>
 <script>
   var msg = ${JSON.stringify(payload)};
-  if (window.ReactNativeWebView) { window.ReactNativeWebView.postMessage(msg); }
+  if (window.ReactNativeWebView) {
+    window.ReactNativeWebView.postMessage(msg);                 // mobile app WebView
+  } else {
+    var ret = ${JSON.stringify(webReturn)};
+    if (ret) { window.location.replace(ret); }                  // web browser -> back to app
+  }
 </script>
 </body></html>`);
   },
