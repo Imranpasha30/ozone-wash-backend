@@ -46,6 +46,14 @@ const CronService = {
         if (total > 0) console.log('[alerts] sweep queued', total, 'new alerts:', out);
       } catch (e) { console.error('[alerts] sweep failed:', e?.message); }
     });
+
+    // Release abandoned payment holds every 2 minutes. An online booking is a
+    // 'pending' HOLD reserving a van slot while the customer pays; if it's still
+    // unpaid 8 minutes after creation the slot is freed for other customers.
+    cron.schedule('*/2 * * * *', async () => {
+      await CronService.releaseExpiredHolds();
+    });
+
     // Run once on boot so the dashboard isn't empty during the first 5 min window.
     setTimeout(() => {
       AdminAlertsService.runTimeBasedChecks()
@@ -229,6 +237,43 @@ const CronService = {
       }
     } catch (err) {
       console.error('Certificate expiry cron error:', err.message);
+    }
+  },
+
+  // Release abandoned payment holds. A 'pending' online booking reserves a van
+  // slot (its job holds capacity) while the customer completes payment. Still
+  // unpaid 8 minutes after creation → cancel the booking + its holding job (which
+  // frees the slot) and any not-yet-paid AMC bought at checkout.
+  releaseExpiredHolds: async () => {
+    try {
+      const { rows } = await db.query(
+        `UPDATE bookings
+            SET status = 'cancelled', updated_at = NOW()
+          WHERE status = 'pending'
+            AND payment_status <> 'paid'
+            AND payment_method <> 'cod'
+            AND amount_paise > 0
+            AND created_at < NOW() - INTERVAL '8 minutes'
+          RETURNING id, amc_contract_id`
+      );
+      for (const b of rows) {
+        // Free the van slot — capacity counts scheduled jobs, so cancelling the
+        // holding job releases the window for other customers.
+        await db.query(
+          `UPDATE jobs SET status = 'cancelled' WHERE booking_id = $1 AND status = 'scheduled'`,
+          [b.id]
+        ).catch(() => {});
+        if (b.amc_contract_id) {
+          await db.query(
+            `UPDATE amc_contracts SET status = 'cancelled'
+              WHERE id = $1 AND payment_status <> 'paid'`,
+            [b.amc_contract_id]
+          ).catch(() => {});
+        }
+      }
+      if (rows.length) console.log(`🕗 Released ${rows.length} expired payment hold(s) — slots freed`);
+    } catch (e) {
+      console.error('[cron] releaseExpiredHolds failed:', e?.message);
     }
   },
 

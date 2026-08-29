@@ -78,6 +78,9 @@ const settleByOrderId = async (orderId, paymentId, gateway = 'razorpay') => {
   );
   if (b.rows.length) {
     await BookingRepository.updateStatus(b.rows[0].id, 'confirmed');
+    // If the 8-min hold-sweep had already cancelled the holding job (payment
+    // landed late), reinstate it so the now-paid booking is serviceable again.
+    await db.query(`UPDATE jobs SET status = 'scheduled' WHERE booking_id = $1 AND status = 'cancelled'`, [b.rows[0].id]).catch(() => {});
     await activateLinkedAmc({ id: b.rows[0].id, amc_contract_id: b.rows[0].amc_contract_id },
       { order_id: orderId, payment_id: paymentId });
     issueBookingInvoice(b.rows[0].id, { gateway, payment_id: paymentId });
@@ -196,6 +199,12 @@ const PaymentController = {
         amount: order.amount,
         currency: order.currency,
         booking_id,
+        // Payment-hold expiry — the van slot is reserved until this instant
+        // (booking created_at + 8 min). The app shows a countdown to it; the
+        // sweep releases the hold if it lapses. Null for COD / ₹0 (no hold).
+        hold_expires_at: booking.status === 'pending'
+          ? new Date(new Date(booking.created_at).getTime() + 8 * 60 * 1000).toISOString()
+          : null,
         // Razorpay checkout SDK needs the key; Easebuzz needs the hosted URL;
         // PayU needs the signed form params to POST to payment_url.
         key_id: order.key_id || null,
@@ -249,6 +258,8 @@ const PaymentController = {
       });
 
       await BookingRepository.updateStatus(booking_id, 'confirmed');
+      // Reinstate the holding job if the 8-min sweep cancelled it (late payment).
+      await db.query(`UPDATE jobs SET status = 'scheduled' WHERE booking_id = $1 AND status = 'cancelled'`, [booking_id]).catch(() => {});
 
       // AMC purchased at checkout → activate; this booking = visit #1 of the plan.
       await activateLinkedAmc(booking, { order_id: providedOrderId, payment_id: result.payment_id });

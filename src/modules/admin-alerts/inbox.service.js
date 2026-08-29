@@ -64,6 +64,7 @@ const InboxService = {
       LEFT JOIN vehicles v ON v.id = j.vehicle_id
           WHERE j.status = 'scheduled'
             AND j.assigned_team_id IS NULL
+            AND (b.id IS NULL OR b.status = 'confirmed')
           ORDER BY j.scheduled_at ASC
           LIMIT 50`
       ),

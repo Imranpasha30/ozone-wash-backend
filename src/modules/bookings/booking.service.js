@@ -276,10 +276,15 @@ const BookingService = {
     let job;
     try {
 
-    // 5. Create booking
+    // 5. Create booking. Online-payment bookings are created as a 'pending' HOLD:
+    // the job reserves the van slot but the field team can't see it until payment
+    // settles it to 'confirmed'. COD and ₹0 (AMC-covered) bookings confirm now.
+    // An unpaid hold is released by the 8-minute sweep (cron.releaseExpiredHolds).
+    const requiresOnlinePayment = pricing.amount_paise > 0 && data.payment_method !== 'cod';
     const firstTank = tanks ? tanks[0] : null;
     booking = await BookingRepository.create({
       customer_id: customerId,
+      status: requiresOnlinePayment ? 'pending' : 'confirmed',
       tank_type: firstTank ? firstTank.tank_type : data.tank_type,
       tank_size_litres: firstTank ? firstTank.tank_size_litres : data.tank_size_litres,
       tanks: tanks,

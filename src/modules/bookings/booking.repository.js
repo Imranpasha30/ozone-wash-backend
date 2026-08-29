@@ -27,7 +27,10 @@ const BookingRepository = {
         data.contact_name || null,
         data.contact_phone || null,
         'tank_cleaning', 'tank',
-        'confirmed',
+        // Online-payment bookings start as a 'pending' HOLD (set in booking.service):
+        // the job reserves the van slot but stays invisible to the field team until
+        // payment settles it to 'confirmed'. COD / ₹0 bookings land 'confirmed'.
+        data.status || 'confirmed',
         data.plan || 'one_time',
         data.amc_contract_id || null,
         data.pricing ? JSON.stringify(data.pricing) : null,

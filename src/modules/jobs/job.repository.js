@@ -331,6 +331,10 @@ const JobRepository = {
        WHERE j.assigned_team_id IS NULL
          AND j.assigned_field_team_id IS NULL
          AND j.status = 'scheduled'
+         -- Never surface an unpaid HOLD: a tank job is serviceable only once its
+         -- booking is 'confirmed' (paid / COD / ₹0). Auto-wash jobs have no
+         -- booking row and are unaffected.
+         AND (b.id IS NULL OR b.status = 'confirmed')
        ORDER BY j.scheduled_at ASC`
     );
     return result.rows;

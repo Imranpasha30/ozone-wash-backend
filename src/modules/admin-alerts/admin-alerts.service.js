@@ -238,6 +238,8 @@ const AdminAlertsService = {
         WHERE j.status = 'scheduled'
           AND j.assigned_team_id IS NULL
           AND j.created_at < NOW() - INTERVAL '3 hours'
+          AND (j.booking_id IS NULL OR EXISTS (
+            SELECT 1 FROM bookings b WHERE b.id = j.booking_id AND b.status = 'confirmed'))
         LIMIT 50`
     );
     for (const r of aging) {
@@ -267,6 +269,8 @@ const AdminAlertsService = {
           AND j.assigned_team_id IS NULL
           AND j.scheduled_at > NOW()
           AND j.scheduled_at < NOW() + INTERVAL '1 hour'
+          AND (j.booking_id IS NULL OR EXISTS (
+            SELECT 1 FROM bookings b WHERE b.id = j.booking_id AND b.status = 'confirmed'))
         LIMIT 50`
     );
     for (const r of imminent) {
