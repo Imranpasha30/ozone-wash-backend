@@ -40,7 +40,7 @@ const createBookingValidation = [
     .isISO8601().withMessage('Invalid date format'),
   body('payment_method')
     .notEmpty().withMessage('Payment method is required')
-    .isIn(['upi', 'card', 'wallet', 'cod']).withMessage('Invalid payment method'),
+    .isIn(['online', 'upi', 'card', 'wallet', 'cod']).withMessage('Invalid payment method'),
   body('addons')
     .optional()
     .isArray().withMessage('Addons must be an array'),
