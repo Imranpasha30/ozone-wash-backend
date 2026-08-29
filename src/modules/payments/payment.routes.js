@@ -90,8 +90,11 @@ router.post('/refund', authenticate, requireRole('admin'), PaymentController.ref
 router.post('/easebuzz/callback', PaymentController.easebuzzCallback);
 
 // PayU surl/furl target — hit by the PayU hosted checkout (form POST, no JWT).
-// Reverse-hash-verified inside the handler.
+// Reverse-hash-verified inside the handler. Mobile (WebView) uses this one.
 router.post('/payu/callback', PaymentController.payuCallback);
+// Web checkout variant — settles identically but replies with a server-side 302
+// back to the web app instead of a postMessage page.
+router.post('/payu/callback/web', PaymentController.payuCallbackWeb);
 
 // Razorpay webhook — server-to-server, no JWT. Verified against
 // RAZORPAY_WEBHOOK_SECRET (raw-body HMAC) inside the handler.

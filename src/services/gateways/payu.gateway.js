@@ -44,7 +44,7 @@ const toRupees = (paise) => (paise / 100).toFixed(2);
  * Prepare a PayU hosted-checkout order. Returns the signed form params the app
  * POSTs to payment_url. customer = { name, email, phone }.
  */
-async function createOrder(amountPaise, refId, customer = {}) {
+async function createOrder(amountPaise, refId, customer = {}, opts = {}) {
   const key = process.env.PAYU_KEY;
   const salt = process.env.PAYU_SALT;
   const txnid = `payu_${String(refId).replace(/-/g, '').slice(0, 20)}_${Date.now().toString(36)}`;
@@ -54,7 +54,12 @@ async function createOrder(amountPaise, refId, customer = {}) {
   const email = customer.email || 'support@ozonewash.in';
   const phone = customer.phone || '9999999999';
   const appUrl = process.env.APP_URL || 'http://localhost:3100';
-  const surl = `${appUrl}/api/v1/payments/payu/callback`;
+  // Web checkout is a full-page redirect, so it needs a callback that issues a
+  // real HTTP 302 back to the web app; the mobile WebView uses the postMessage
+  // callback. Pick the surl by channel (anything other than 'web' = mobile).
+  const surl = opts.channel === 'web'
+    ? `${appUrl}/api/v1/payments/payu/callback/web`
+    : `${appUrl}/api/v1/payments/payu/callback`;
   const furl = surl;
 
   if (!isConfigured()) {

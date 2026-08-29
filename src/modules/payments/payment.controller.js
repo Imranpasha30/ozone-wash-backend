@@ -124,6 +124,41 @@ const handleRazorpayEvent = async (evt) => {
   }
 };
 
+/**
+ * Verify + settle a PayU surl/furl POST. Shared by the mobile (postMessage) and
+ * web (302 redirect) callbacks. Returns the resolved status + what it settled.
+ */
+const settlePayuFromCallback = async (p) => {
+  let settled = false, bookingId = null, contractId = null;
+  try {
+    const result = PaymentService.verifyPayment({ ...p, gateway: 'payu' });
+    // txnid was saved as the order id on the booking/contract at order time.
+    await settleByOrderId(p.txnid, result.payment_id, 'payu');
+    const b = await db.query(`SELECT id, payment_status FROM bookings WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
+    if (b.rows.length) {
+      bookingId = b.rows[0].id;
+      settled = b.rows[0].payment_status === 'paid';
+    } else {
+      const c = await db.query(`SELECT id, payment_status FROM amc_contracts WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
+      if (c.rows.length) { contractId = c.rows[0].id; settled = c.rows[0].payment_status === 'paid'; }
+    }
+  } catch (e) {
+    console.warn('[payu] callback verify failed:', e?.message);
+  }
+  return { status: settled ? 'success' : String(p.status || 'failure').toLowerCase(), bookingId, contractId };
+};
+
+/** Web-app return URL (APP_WEB_URL + result query). '' when APP_WEB_URL is unset. */
+const buildWebReturnUrl = (status, bookingId, contractId, txnid) => {
+  const webBase = (process.env.APP_WEB_URL || '').replace(/\/+$/, '');
+  if (!webBase) return '';
+  const qs = new URLSearchParams({ ozw_payment: status });
+  if (bookingId) qs.set('booking_id', bookingId);
+  if (contractId) qs.set('contract_id', contractId);
+  if (txnid) qs.set('txnid', txnid);
+  return `${webBase}/?${qs.toString()}`;
+};
+
 const PaymentController = {
 
   // POST /api/v1/payments/create-order
@@ -146,7 +181,8 @@ const PaymentController = {
       }
 
       const customer = await customerForUser(req.user.id);
-      const order = await PaymentService.createOrder(chargeAmountPaise(booking.amount_paise), booking_id, customer);
+      const order = await PaymentService.createOrder(
+        chargeAmountPaise(booking.amount_paise), booking_id, customer, { channel: req.body.channel });
 
       await BookingRepository.updatePayment(booking_id, {
         razorpay_order_id: order.order_id,
@@ -374,44 +410,13 @@ const PaymentController = {
   // and relays the result to the app WebView via postMessage.
   payuCallback: async (req, res) => {
     const p = req.body || {};
-    let settled = false;
-    let bookingId = null;
-    let contractId = null;
-    try {
-      const result = PaymentService.verifyPayment({ ...p, gateway: 'payu' });
-      // txnid was saved as the order id on the booking/contract at order time.
-      await settleByOrderId(p.txnid, result.payment_id, 'payu');
-      const b = await db.query(`SELECT id, payment_status FROM bookings WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
-      if (b.rows.length) {
-        bookingId = b.rows[0].id;
-        settled = b.rows[0].payment_status === 'paid';
-      } else {
-        const c = await db.query(`SELECT id, payment_status FROM amc_contracts WHERE razorpay_order_id = $1 LIMIT 1`, [p.txnid]);
-        if (c.rows.length) { contractId = c.rows[0].id; settled = c.rows[0].payment_status === 'paid'; }
-      }
-    } catch (e) {
-      console.warn('[payu] callback verify failed:', e?.message);
-    }
-
-    const status = settled ? 'success' : (String(p.status || 'failure').toLowerCase());
+    const { status, bookingId, contractId } = await settlePayuFromCallback(p);
     const payload = JSON.stringify({ source: 'payu', status, txnid: p.txnid || null, booking_id: bookingId, contract_id: contractId });
 
-    // Web (full-page redirect) return: to reach PayU's hosted page the browser
-    // navigated AWAY from the app, so postMessage (the mobile WebView path below)
-    // can't reach it. Instead bounce the browser back to the web app with the
-    // result in the query string; the app reads it on startup and routes to the
-    // confirmation screen. Only active when APP_WEB_URL is set (e.g. the web
-    // app's origin); otherwise web just shows the static page (no regression).
-    const webBase = (process.env.APP_WEB_URL || '').replace(/\/+$/, '');
-    let webReturn = '';
-    if (webBase) {
-      const qs = new URLSearchParams({ ozw_payment: status });
-      if (bookingId) qs.set('booking_id', bookingId);
-      if (contractId) qs.set('contract_id', contractId);
-      if (p.txnid) qs.set('txnid', p.txnid);
-      webReturn = `${webBase}/?${qs.toString()}`;
-    }
-
+    // Mobile app WebView path: relay the result to the RN layer via postMessage.
+    // A JS redirect fallback stays in case a browser ever hits this legacy
+    // callback directly — but web checkout now uses /payu/callback/web (302).
+    const webReturn = buildWebReturnUrl(status, bookingId, contractId, p.txnid);
     res.set('Content-Type', 'text/html').send(`<!doctype html>
 <html><body style="font-family:sans-serif;text-align:center;padding-top:40vh;background:#fff">
 <p>${status === 'success' ? '✅ Payment successful — returning to app…' : '❌ Payment failed — returning to app…'}</p>
@@ -421,9 +426,26 @@ const PaymentController = {
     window.ReactNativeWebView.postMessage(msg);                 // mobile app WebView
   } else {
     var ret = ${JSON.stringify(webReturn)};
-    if (ret) { window.location.replace(ret); }                  // web browser -> back to app
+    if (ret) { window.location.replace(ret); }                  // legacy web fallback
   }
 </script>
+</body></html>`);
+  },
+
+  // POST /api/v1/payments/payu/callback/web  (no auth — reverse-hash-verified)
+  // Web checkout is a full-page redirect, so there is no RN WebView to postMessage
+  // to. Settle exactly like the mobile callback, then issue a real server-side
+  // HTTP 302 back to the web app. The redirect target (APP_WEB_URL) is set on the
+  // SERVER, so a client can't influence where the browser lands.
+  payuCallbackWeb: async (req, res) => {
+    const p = req.body || {};
+    const { status, bookingId, contractId } = await settlePayuFromCallback(p);
+    const webReturn = buildWebReturnUrl(status, bookingId, contractId, p.txnid);
+    if (webReturn) return res.redirect(302, webReturn);
+    // APP_WEB_URL not configured — show a minimal static confirmation instead.
+    return res.set('Content-Type', 'text/html').send(`<!doctype html>
+<html><body style="font-family:sans-serif;text-align:center;padding-top:40vh;background:#fff">
+<p>${status === 'success' ? '✅ Payment successful. You can return to the app.' : '❌ Payment failed. Please return to the app and retry.'}</p>
 </body></html>`);
   },
 
@@ -492,7 +514,8 @@ const PaymentController = {
       }
 
       const customer = await customerForUser(req.user.id);
-      const order = await PaymentService.createOrder(chargeAmountPaise(contract.amount_paise), contract_id, customer);
+      const order = await PaymentService.createOrder(
+        chargeAmountPaise(contract.amount_paise), contract_id, customer, { channel: req.body.channel });
 
       await AmcRepository.updatePayment(contract_id, {
         razorpay_order_id: order.order_id,

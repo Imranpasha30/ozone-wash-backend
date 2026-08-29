@@ -57,8 +57,8 @@ const PaymentService = {
    *   refId       — booking or contract id
    *   customer    — { name, email, phone } (required by Easebuzz)
    */
-  createOrder: async (amountPaise, refId, customer = {}) => {
-    return activeGateway().createOrder(amountPaise, refId, customer);
+  createOrder: async (amountPaise, refId, customer = {}, opts = {}) => {
+    return activeGateway().createOrder(amountPaise, refId, customer, opts);
   },
 
   /**
