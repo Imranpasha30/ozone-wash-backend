@@ -35,6 +35,13 @@ const AmcService = {
       throw { status: 400, message: 'Invalid plan type.' };
     }
 
+    // Anti-tamper: the contract amount is ALWAYS server-computed below. Discard
+    // any client-supplied price so a Burp/proxy edit can never set the amount.
+    if (data.amount_paise != null) {
+      console.warn(`[tamper] AMC create carried a client amount_paise=${data.amount_paise} — discarded; server recomputes.`);
+      delete data.amount_paise;
+    }
+
     const litres = Number(data.tank_size_litres);
     const tankCount = Math.max(1, parseInt(data.tank_count, 10) || 1);
     const matrixPlan = PricingService.normalizePlan(data.plan_type);

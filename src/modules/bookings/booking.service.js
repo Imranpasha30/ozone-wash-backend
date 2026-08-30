@@ -126,6 +126,14 @@ const BookingService = {
       }
     } catch (_) {}
 
+    // Anti-tamper: the amount is ALWAYS recomputed server-side below from the
+    // pricing matrix. If a client (Burp/proxy) slipped a price field into the
+    // request, log it and discard it so nothing downstream can ever trust it.
+    if (data.amount_paise != null || data.price != null || data.grand_total != null) {
+      console.warn(`[tamper] booking create carried a client price (amount_paise=${data.amount_paise}, price=${data.price}) — discarded; server recomputes.`);
+      delete data.amount_paise; delete data.price; delete data.grand_total;
+    }
+
     // 4. Price the booking.
     //    V2 (spec §5): engaged when the app sends a `plan` (or an AMC upsell
     //    via `purchase_amc_plan` on the payment step). One-time = 1 service;
@@ -267,7 +275,10 @@ const BookingService = {
     } catch (e) {
       if (releaseSlotLock) { releaseSlotLock().catch(() => {}); releaseSlotLock = null; }
       if (e?.status) throw e;
-      console.warn('[bookings] scheduling check skipped:', e?.message);
+      // Fail CLOSED: if capacity couldn't be verified, do NOT create an unguarded
+      // booking (that risks overselling the slot). Ask the customer to retry.
+      console.error('[bookings] capacity check failed — rejecting booking:', e?.message);
+      throw { status: 503, message: 'Could not verify slot availability right now. Please try again.' };
     }
 
     // booking/job are used after the critical section (alerts, return) —
