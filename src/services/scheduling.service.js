@@ -165,6 +165,31 @@ async function capacityOk(slotTimeIso, durationMin) {
 }
 
 /**
+ * Does crew `teamId` already have a scheduled/in-progress job that OVERLAPS the
+ * window [slotTimeIso, slotTimeIso + durationMin)? Duration-aware (not a fixed
+ * ±window), excludes the job being (re)assigned. Returns the clashing job or null.
+ * This is what prevents booking one crew into two overlapping jobs.
+ */
+async function crewOverlap(teamId, slotTimeIso, durationMin, excludeJobId = null) {
+  if (!teamId) return null;
+  const start = new Date(slotTimeIso);
+  const end = new Date(start.getTime() + (Number(durationMin) || 120) * 60000);
+  const { rows } = await db.query(
+    `SELECT id, scheduled_at, duration_min
+       FROM jobs
+      WHERE assigned_team_id = $1
+        AND status IN ('scheduled','in_progress')
+        AND ($4::uuid IS NULL OR id <> $4::uuid)
+        AND scheduled_at < $3
+        AND scheduled_at + make_interval(mins => COALESCE(duration_min, 120)) > $2
+      ORDER BY scheduled_at ASC
+      LIMIT 1`,
+    [teamId, start.toISOString(), end.toISOString(), excludeJobId]
+  );
+  return rows[0] || null;
+}
+
+/**
  * Per-date booking mutex — closes the check-then-insert race.
  *
  * Two customers booking the last free van simultaneously could BOTH pass the
@@ -197,4 +222,4 @@ async function acquireSlotLock(dateKey) {
   };
 }
 
-module.exports = { settings, durationFor, slotsForDate, capacityOk, tierForLitres, invalidate, acquireSlotLock, DEFAULTS };
+module.exports = { settings, durationFor, slotsForDate, capacityOk, crewOverlap, tierForLitres, invalidate, acquireSlotLock, DEFAULTS };

@@ -72,8 +72,9 @@ const JobService = {
     return job;
   },
 
-  // Assign field team to a job (admin only)
-  assignTeam: async (jobId, teamId) => {
+  // Assign field team to a job (admin only). Blocks double-booking one crew into
+  // overlapping jobs; pass opts.force=true to override deliberately.
+  assignTeam: async (jobId, teamId, opts = {}) => {
     // Check job exists
     const job = await JobRepository.findById(jobId);
     if (!job) {
@@ -88,7 +89,28 @@ const JobService = {
       throw { status: 400, message: 'Cannot assign team to a completed job.' };
     }
 
-    // Assign the team
+    // Conflict guard: prevent putting one crew on two OVERLAPPING jobs. Serialize
+    // per crew+date with an advisory lock so two concurrent assigns can't both
+    // pass the check. Default is BLOCK (409); opts.force is an explicit override.
+    if (teamId && !opts.force) {
+      const SchedulingService = require('../../services/scheduling.service');
+      const dateKey = String(job.scheduled_at).slice(0, 10);
+      const release = await SchedulingService.acquireSlotLock(`crew:${teamId}:${dateKey}`);
+      try {
+        const clash = await SchedulingService.crewOverlap(teamId, job.scheduled_at, job.duration_min, jobId);
+        if (clash) {
+          const when = new Date(clash.scheduled_at).toLocaleString('en-IN', {
+            day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true,
+          });
+          throw { status: 409, message: `That crew already has an overlapping job on ${when}. Reassign that first, or override.` };
+        }
+        return await JobRepository.assignTeam(jobId, teamId);
+      } finally {
+        await release();
+      }
+    }
+
+    // No team (unassign) or explicit override → assign directly.
     const updated = await JobRepository.assignTeam(jobId, teamId);
     return updated;
   },

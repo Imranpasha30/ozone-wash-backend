@@ -91,8 +91,8 @@ const JobController = {
       if (!errors.isEmpty()) {
         return sendError(res, 'Validation failed', 400, errors.array());
       }
-      const { team_id } = req.body;
-      const job = await JobService.assignTeam(req.params.id, team_id);
+      const { team_id, force } = req.body;
+      const job = await JobService.assignTeam(req.params.id, team_id, { force: force === true || force === 'true' });
       JobRepository.findById(req.params.id).then(fullJob => {
         if (fullJob) {
           NotificationService.onTeamAssigned(
