@@ -423,8 +423,51 @@ async function freezeAndScheduleNew() {
   return { inserted_count: rows.length, rows };
 }
 
+/* ── AMC plan catalog (display name / copy only — price lives in the matrix) ── */
+async function listAmcPlans() {
+  try {
+    const { rows } = await query(
+      `SELECT plan, display_name, headline, features, display_order, active, updated_at
+         FROM amc_plans ORDER BY display_order ASC, plan ASC`
+    );
+    return rows;
+  } catch (e) {
+    // Migration 031 not applied yet → fall back to no catalog (app uses its
+    // built-in labels). 42P01 = undefined_table.
+    if (e && e.code === '42P01') return [];
+    throw e;
+  }
+}
+
+async function updateAmcPlan(plan, fields = {}) {
+  const p = normalizePlan(plan) || plan;
+  if (!VALID_PLANS.includes(p)) throw { status: 400, message: `Invalid plan: ${plan}` };
+  const sets = ['updated_at = NOW()'];
+  const params = [];
+  let i = 1;
+  if (fields.display_name !== undefined) {
+    const dn = String(fields.display_name || '').trim();
+    if (!dn) throw { status: 400, message: 'display_name cannot be empty.' };
+    sets.push(`display_name = $${i++}`); params.push(dn);
+  }
+  if (fields.headline !== undefined)      { sets.push(`headline = $${i++}`);        params.push(fields.headline == null ? null : String(fields.headline).trim()); }
+  if (fields.features !== undefined)      { sets.push(`features = $${i++}::jsonb`); params.push(JSON.stringify(Array.isArray(fields.features) ? fields.features : [])); }
+  if (fields.display_order !== undefined) { sets.push(`display_order = $${i++}`);   params.push(parseInt(fields.display_order, 10) || 0); }
+  if (fields.active !== undefined)        { sets.push(`active = $${i++}`);          params.push(!!fields.active); }
+  params.push(p);
+  const { rows } = await query(
+    `UPDATE amc_plans SET ${sets.join(', ')} WHERE plan = $${i}
+     RETURNING plan, display_name, headline, features, display_order, active, updated_at`,
+    params
+  );
+  if (!rows.length) throw { status: 404, message: `AMC plan '${p}' not found.` };
+  return rows[0];
+}
+
 module.exports = {
   tierForLitres,
+  listAmcPlans,
+  updateAmcPlan,
   priceForBooking,
   listTiers,
   listMatrix,

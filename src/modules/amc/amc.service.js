@@ -47,11 +47,14 @@ const AmcService = {
     const matrixPlan = PricingService.normalizePlan(data.plan_type);
     const useMatrix = Number.isFinite(litres) && litres > 0 && !!matrixPlan;
 
-    let amountPaise = PLAN_PRICES[data.plan_type];
+    // Price from the pricing matrix (single source of truth) whenever a tank
+    // size is available — this is what the customer was shown. Backward-compat:
+    // an OLD client that sends no tank size falls back to the static plan price
+    // (logged) instead of failing enrollment; new clients always hit the matrix.
+    let amountPaise;
     let servicesPerYear = null;
-    let durationMonths = PLAN_DURATIONS[data.plan_type];
-
-    if (useMatrix) {
+    let durationMonths;
+    if (matrixPlan && Number.isFinite(litres) && litres > 0) {
       const quote = await PricingService.quoteInvoice({
         tanks: Array(tankCount).fill(litres),
         plan: matrixPlan,
@@ -60,6 +63,10 @@ const AmcService = {
       amountPaise = quote.annual_service_total_paise;
       servicesPerYear = quote.services_per_year;
       durationMonths = 12; // AMC = annual contract of N services (spec §4)
+    } else {
+      console.warn(`[amc] createContract: no tank size for '${data.plan_type}' — static price fallback (client should send tank_size_litres).`);
+      amountPaise = PLAN_PRICES[data.plan_type];
+      durationMonths = PLAN_DURATIONS[data.plan_type] || 12;
     }
 
     const startDate = new Date(data.start_date || Date.now());

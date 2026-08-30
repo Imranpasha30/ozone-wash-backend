@@ -456,4 +456,24 @@ router.put('/settings/:key', adminOnly, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── AMC plan catalog (display name / headline / features — NOT price) ──────
+// Prices always come from the pricing matrix; these endpoints edit only the
+// admin-facing display copy shown in the app + billing.
+router.get('/amc-plans', adminOnly, async (req, res, next) => {
+  try {
+    const plans = await PricingService.listAmcPlans();
+    return sendSuccess(res, { plans });
+  } catch (err) { next(err); }
+});
+
+router.put('/amc-plans/:plan', adminOnly, async (req, res, next) => {
+  try {
+    const plan = await PricingService.updateAmcPlan(req.params.plan, req.body || {});
+    return sendSuccess(res, { plan }, 'AMC plan updated');
+  } catch (err) {
+    if (err && err.status) return sendError(res, err.message, err.status);
+    next(err);
+  }
+});
+
 module.exports = router;

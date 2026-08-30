@@ -15,10 +15,16 @@ const AmcController = {
       const litres = parseFloat(req.query.tank_size_litres);
       const count = Math.max(1, parseInt(req.query.tank_count, 10) || 1);
 
-      // Legacy fallback (no tank size given) — return the static plan info
+      // Names/copy come from the admin-editable catalog; prices from the matrix.
+      const catalog = await PricingService.listAmcPlans();
+      const metaFor = Object.fromEntries(catalog.map((c) => [c.plan, c]));
+
+      // No tank size given → return the catalog (names/copy) without prices.
       if (!litres || !Number.isFinite(litres) || litres <= 0) {
-        const plans = AmcService.getPlanInfo();
-        return sendSuccess(res, { plans });
+        const plans = catalog
+          .filter((c) => c.active !== false)
+          .map((c) => ({ plan: c.plan, display_name: c.display_name, headline: c.headline, features: c.features }));
+        return sendSuccess(res, { plans, catalog_only: true });
       }
 
       const tier = await PricingService.tierForLitres(litres);
@@ -29,13 +35,22 @@ const AmcController = {
       const planNames = ['one_time', 'half_yearly', 'quarterly', 'monthly'];
       const plans = [];
       for (const plan of planNames) {
+        const meta = metaFor[plan] || {};
+        if (meta.active === false) continue; // hidden by admin
         try {
           const p = await PricingService.priceForBooking({ tier_id: tier.id, plan, tank_count: count });
-          plans.push(p);
+          plans.push({
+            ...p,
+            display_name: meta.display_name || plan,
+            headline: meta.headline || null,
+            features: meta.features || [],
+            display_order: meta.display_order ?? 99,
+          });
         } catch (e) {
-          // Skip missing plans rather than failing the whole call
+          // Skip plans with no active pricing rather than failing the whole call
         }
       }
+      plans.sort((a, b) => (a.display_order ?? 99) - (b.display_order ?? 99));
 
       return sendSuccess(res, { tier, tank_count: count, plans });
     } catch (err) {
