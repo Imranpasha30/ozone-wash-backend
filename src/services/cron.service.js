@@ -243,7 +243,7 @@ const CronService = {
 
   // Release abandoned payment holds. A 'pending' online booking reserves a van
   // slot (its job holds capacity) while the customer completes payment. Still
-  // unpaid 8 minutes after creation → cancel the booking + its holding job (which
+  // unpaid 5 minutes after creation → cancel the booking + its holding job (which
   // frees the slot) and any not-yet-paid AMC bought at checkout.
   releaseExpiredHolds: async () => {
     try {
@@ -254,7 +254,7 @@ const CronService = {
             AND payment_status <> 'paid'
             AND payment_method <> 'cod'
             AND amount_paise > 0
-            AND created_at < NOW() - INTERVAL '8 minutes'
+            AND created_at < NOW() - INTERVAL '5 minutes'
           RETURNING id, amc_contract_id, razorpay_order_id`
       );
       for (const b of rows) {

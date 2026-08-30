@@ -262,10 +262,10 @@ const PaymentController = {
         currency: order.currency,
         booking_id,
         // Payment-hold expiry — the van slot is reserved until this instant
-        // (booking created_at + 8 min). The app shows a countdown to it; the
+        // (booking created_at + 5 min). The app shows a countdown to it; the
         // sweep releases the hold if it lapses. Null for COD / ₹0 (no hold).
         hold_expires_at: booking.status === 'pending'
-          ? new Date(new Date(booking.created_at).getTime() + 8 * 60 * 1000).toISOString()
+          ? new Date(new Date(booking.created_at).getTime() + 5 * 60 * 1000).toISOString()
           : null,
         // Razorpay checkout SDK needs the key; Easebuzz needs the hosted URL;
         // PayU needs the signed form params to POST to payment_url.
