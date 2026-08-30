@@ -412,6 +412,41 @@ const NotificationService = {
     ]);
   },
 
+  // 10. Refund initiated — money is on its way back (5-7 working days). When the
+  // whole booking was refunded it's also been cancelled.
+  onRefundInitiated: async (customer, { amountRupees, cancelled, bookingId }) => {
+    const cancelLine = cancelled ? 'Your booking has been cancelled and a' : 'A';
+    const message = `${cancelLine} refund of ₹${amountRupees} has been initiated for your Ozone Wash booking. It will be credited to your original payment method within 5-7 working days. -OZNWSH`;
+    await Promise.allSettled([
+      NotificationService.sendSMS(customer.phone, message),
+      NotificationService.notifyUser(
+        customer,
+        cancelled ? '↩️ Booking cancelled — refund initiated' : '↩️ Refund initiated',
+        `₹${amountRupees} will be credited to your original payment method in 5-7 working days.`,
+        { booking_id: bookingId || '', type: 'refund_initiated' }
+      ),
+      NotificationService.sendWhatsApp(customer.phone, 'refund_initiated', [
+        { name: 'customer_name', value: customer.name || 'Customer' },
+        { name: 'amount', value: String(amountRupees) },
+      ]),
+    ]);
+  },
+
+  // 11. Refund completed — funds actually credited (fired from the gateway
+  // refund webhook once PayU settles it).
+  onRefundCompleted: async (customer, { amountRupees, bookingId }) => {
+    const message = `Your refund of ₹${amountRupees} from Ozone Wash has been processed and credited to your original payment method. -OZNWSH`;
+    await Promise.allSettled([
+      NotificationService.sendSMS(customer.phone, message),
+      NotificationService.notifyUser(
+        customer,
+        '✅ Refund completed',
+        `₹${amountRupees} has been credited to your original payment method.`,
+        { booking_id: bookingId || '', type: 'refund_completed' }
+      ),
+    ]);
+  },
+
   /* ──────────────────────────────────────────────────────────────────────
    * AUTO WASH NOTIFICATIONS
    *

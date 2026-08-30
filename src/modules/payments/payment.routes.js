@@ -100,6 +100,11 @@ router.post('/payu/callback/web', PaymentController.payuCallbackWeb);
 // Reverse-hash-verified + idempotent inside the handler. Set the URL in PayU
 // Dashboard → Developers → Webhooks (separate TEST and LIVE URLs).
 router.post('/payu/webhook', PaymentController.payuWebhook);
+// PayU REFUND webhook — fires when a refund changes state (queued → processed/
+// failed). Updates the refund status + timeline and notifies the customer when
+// the money is actually credited. Point PayU Dashboard → Webhooks (event:
+// "Refund") at this URL. Idempotent; only ever updates existing refund rows.
+router.post('/payu/refund-webhook', PaymentController.payuRefundWebhook);
 
 // Razorpay webhook — server-to-server, no JWT. Verified against
 // RAZORPAY_WEBHOOK_SECRET (raw-body HMAC) inside the handler.

@@ -81,6 +81,23 @@ const reinstateHoldingJobs = async (bookingId) => {
   }
 };
 
+/** Notify the customer that a refund was initiated (+ booking cancelled on a
+ *  full refund). Best-effort push + SMS; never blocks the refund response. */
+const notifyRefundCustomer = async ({ isAmc, idVal, refundRupees, cancelled }) => {
+  try {
+    const q = isAmc
+      ? `SELECT u.id, u.name, u.phone, u.fcm_token FROM amc_contracts c JOIN users u ON u.id = c.customer_id WHERE c.id = $1`
+      : `SELECT u.id, u.name, u.phone, u.fcm_token FROM bookings b JOIN users u ON u.id = b.customer_id WHERE b.id = $1`;
+    const { rows } = await db.query(q, [idVal]);
+    if (!rows.length) return;
+    const c = rows[0];
+    await NotificationService.onRefundInitiated(
+      { id: c.id, name: c.name, phone: c.phone, fcm_token: c.fcm_token },
+      { amountRupees: refundRupees, cancelled, bookingId: isAmc ? null : idVal }
+    );
+  } catch (e) { console.warn('[refund] customer notify failed:', e?.message); }
+};
+
 /** Issue a GST invoice on payment success — fire-and-forget, never blocks. */
 const issueBookingInvoice = (bookingId, result) =>
   InvoiceService.createInvoiceForBooking(bookingId, {
@@ -533,25 +550,54 @@ const PaymentController = {
       const newStatus = newRefunded >= Number(row.amount_paise) ? 'refunded' : 'partially_refunded';
 
       await client.query(
-        `INSERT INTO payment_refunds (booking_id, amc_contract_id, amount_paise, gateway, gateway_refund_id, reason, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        `INSERT INTO payment_refunds (booking_id, amc_contract_id, amount_paise, gateway, gateway_refund_id, reason, created_by, status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'queued')`,
         [isAmc ? null : idVal, isAmc ? idVal : null, refundAmt, gatewayName, refund?.id || null, reason || null, req.user?.id || null]
       );
       await client.query(
         `UPDATE ${table} SET refunded_paise = $1, payment_status = $2, updated_at = NOW() WHERE id = $3`,
         [newRefunded, newStatus, idVal]
       );
+      // Full refund → cancel the booking/contract (and its job) atomically, so a
+      // fully-refunded booking is no longer serviced. Partial refunds leave it.
+      if (newStatus === 'refunded') {
+        if (isAmc) {
+          await client.query(`UPDATE amc_contracts SET status = 'cancelled', updated_at = NOW() WHERE id = $1`, [idVal]);
+        } else {
+          await client.query(`UPDATE bookings SET status = 'cancelled', updated_at = NOW() WHERE id = $1`, [idVal]);
+          await client.query(`UPDATE jobs SET status = 'cancelled', updated_at = NOW() WHERE booking_id = $1 AND status IN ('scheduled','in_progress')`, [idVal]);
+        }
+      }
       await client.query('COMMIT');
-      // Flip the ledger row so MIS/reporting stops counting refunded gross as
-      // revenue (best-effort, post-commit so it never rolls back the refund).
+
+      // ── Post-commit side effects (best-effort; never roll back the refund) ──
+      // Flip the order ledger row so MIS stops counting refunded gross as revenue.
       if (newStatus === 'refunded') PaymentLedger.markRefunded(oid);
+      // Append the outflow lifecycle events (full timeline: initiated → …webhook…).
+      PaymentLedger.recordEvent({
+        bookingId: isAmc ? null : idVal, contractId: isAmc ? idVal : null,
+        orderId: oid, gateway: gatewayName, eventType: 'refund_initiated', direction: 'out',
+        amountPaise: refundAmt, status: 'queued', gatewayRef: refund?.id || null,
+        note: reason || null, createdBy: req.user?.id || null,
+      });
+      if (newStatus === 'refunded') {
+        PaymentLedger.recordEvent({
+          bookingId: isAmc ? null : idVal, contractId: isAmc ? idVal : null,
+          orderId: oid, gateway: gatewayName, eventType: 'booking_cancelled',
+          direction: 'neutral', note: 'auto-cancel on full refund', createdBy: req.user?.id || null,
+        });
+      }
+      // Tell the customer: refund initiated (+ booking cancelled on full refund).
+      notifyRefundCustomer({ isAmc, idVal, refundRupees: refundAmt / 100, cancelled: newStatus === 'refunded' });
 
       return sendSuccess(res, {
         refund,
         refunded_paise: newRefunded,
         remaining_paise: Number(row.amount_paise) - newRefunded,
         payment_status: newStatus,
-      }, newStatus === 'refunded' ? 'Full refund initiated' : 'Partial refund initiated');
+        refund_status: 'queued',
+        booking_status: newStatus === 'refunded' ? 'cancelled' : undefined,
+      }, newStatus === 'refunded' ? 'Full refund initiated · booking cancelled' : 'Partial refund initiated');
     } catch (err) {
       try { await client.query('ROLLBACK'); } catch (_) {}
       if (err?.status) return sendError(res, err.message, err.status);
@@ -688,6 +734,86 @@ const PaymentController = {
       console.warn('[webhook] could not record processed event:', e?.message);
     }
     return res.status(200).json({ success: true });
+  },
+
+  // POST /api/v1/payments/payu/refund-webhook  (no auth — PayU S2S)
+  // Fires when a refund changes state. Best-effort + idempotent: it only ever
+  // UPDATES an existing refund row's status + timeline and notifies the customer
+  // when the money is actually credited. No money movement here, so it can't
+  // over-refund. Field mapping is defensive across PayU's refund payload shapes.
+  payuRefundWebhook: async (req, res) => {
+    const p = req.body || {};
+    const refId = String(p.request_id || p.requestId || p.token_id || p.refund_id || p.mihpayid || '').trim();
+    const rawStatus = String(p.status || p.refund_status || p.refundStatus || p.action_status || '').toLowerCase();
+    console.log('[payu refund webhook]', JSON.stringify({ mihpayid: p.mihpayid, refId, status: rawStatus, amount: p.refund_amount || p.amount }));
+    if (!refId) return res.status(200).json({ received: true }); // verification ping
+
+    const eventId = `refund_${refId}_${rawStatus || 'update'}`;
+    try {
+      const seen = await db.query(`SELECT 1 FROM webhook_events WHERE gateway='payu' AND event_id=$1 LIMIT 1`, [eventId]);
+      if (seen.rows.length) return res.status(200).json({ received: true, deduped: true });
+    } catch (_) { /* dedup is an optimization */ }
+
+    const failed = /fail|reject|error|declin/.test(rawStatus);
+    const done = !failed && /success|refunded|processed|settled|complete|paid/.test(rawStatus);
+    const newStatus = failed ? 'failed' : (done ? 'processed' : 'processing');
+
+    // Match our refund row by the stored gateway_refund_id, else by mihpayid → booking.
+    let rf = null;
+    try {
+      const q1 = await db.query(
+        `SELECT id, booking_id, amc_contract_id, amount_paise FROM payment_refunds
+          WHERE gateway_refund_id = $1 ORDER BY created_at DESC LIMIT 1`, [refId]);
+      rf = q1.rows[0] || null;
+      if (!rf && p.mihpayid) {
+        const q2 = await db.query(
+          `SELECT r.id, r.booking_id, r.amc_contract_id, r.amount_paise
+             FROM payment_refunds r JOIN bookings b ON b.id = r.booking_id
+            WHERE b.razorpay_payment_id = $1 ORDER BY r.created_at DESC LIMIT 1`, [String(p.mihpayid)]);
+        rf = q2.rows[0] || null;
+      }
+    } catch (e) { console.warn('[payu refund webhook] lookup failed:', e?.message); }
+
+    if (rf) {
+      try {
+        await db.query(
+          `UPDATE payment_refunds
+              SET status = $1,
+                  processed_at = CASE WHEN $1 IN ('processed','failed') THEN NOW() ELSE processed_at END
+            WHERE id = $2`, [newStatus, rf.id]);
+      } catch (e) { console.warn('[payu refund webhook] status update failed:', e?.message); }
+      PaymentLedger.recordEvent({
+        bookingId: rf.booking_id, contractId: rf.amc_contract_id, gateway: 'payu',
+        eventType: failed ? 'refund_failed' : (done ? 'refund_processed' : 'refund_processing'),
+        direction: 'out', amountPaise: rf.amount_paise, status: newStatus, gatewayRef: refId,
+        metadata: { via: 'webhook', raw_status: rawStatus },
+      });
+      if (done) {
+        try {
+          const { rows } = await db.query(
+            rf.amc_contract_id
+              ? `SELECT u.id, u.name, u.phone, u.fcm_token FROM amc_contracts c JOIN users u ON u.id = c.customer_id WHERE c.id = $1`
+              : `SELECT u.id, u.name, u.phone, u.fcm_token FROM bookings b JOIN users u ON u.id = b.customer_id WHERE b.id = $1`,
+            [rf.amc_contract_id || rf.booking_id]);
+          if (rows[0]) {
+            NotificationService.onRefundCompleted(
+              { id: rows[0].id, name: rows[0].name, phone: rows[0].phone, fcm_token: rows[0].fcm_token },
+              { amountRupees: (rf.amount_paise || 0) / 100, bookingId: rf.booking_id }
+            ).catch(() => {});
+          }
+        } catch (_) {}
+      }
+    } else {
+      console.warn('[payu refund webhook] no matching refund row for', refId);
+    }
+
+    try {
+      await db.query(
+        `INSERT INTO webhook_events (gateway, event_id, event_type, payload)
+         VALUES ('payu', $1, $2, $3) ON CONFLICT (gateway, event_id) DO NOTHING`,
+        [eventId, `refund_${rawStatus || 'update'}`, JSON.stringify(p)]);
+    } catch (e) { console.warn('[payu refund webhook] record failed:', e?.message); }
+    return res.status(200).json({ received: true });
   },
 
   // POST /api/v1/payments/amc/create-order

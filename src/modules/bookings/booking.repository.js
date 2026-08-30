@@ -77,7 +77,9 @@ const BookingRepository = {
   findAll: async ({ status, date, limit = 20, offset = 0 }) => {
     let query = `SELECT b.*, u.name as customer_name, u.phone as customer_phone,
                         j.id as job_id, j.status as job_status,
-                        j.assigned_team_id, t.name as team_name
+                        j.assigned_team_id, t.name as team_name,
+                        (SELECT r.status FROM payment_refunds r
+                          WHERE r.booking_id = b.id ORDER BY r.created_at DESC LIMIT 1) AS refund_status
                  FROM bookings b
                  JOIN users u ON u.id = b.customer_id
                  LEFT JOIN jobs j ON j.booking_id = b.id
