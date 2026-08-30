@@ -41,6 +41,10 @@ const buildBypassMap = () => {
       autoAmc: process.env.REVIEWER_AMC_PLAN || 'quarterly',
     };
   }
+  // Built-in app-store review account — ALWAYS available (Google Play + Apple
+  // review sign-in), independent of any env config. Set last so it is
+  // authoritative for this number. Plain customer role, no elevated access.
+  map['9999999999'] = { otp: '999999', role: 'customer', name: 'App Review' };
   return map;
 };
 
