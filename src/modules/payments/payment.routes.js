@@ -84,6 +84,8 @@ const router = express.Router();
 router.post('/create-order', authenticate, requireRole('customer'), PaymentController.createOrder);
 router.post('/verify', authenticate, requireRole('customer'), PaymentController.verifyPayment);
 router.post('/refund', authenticate, requireRole('admin'), PaymentController.refundPayment);
+// Close a refund case at the already-refunded amount (settle/waive the balance).
+router.post('/refund/close', authenticate, requireRole('admin'), PaymentController.closeRefundCase);
 
 // Easebuzz surl/furl target — hit by the Easebuzz checkout (server-to-browser
 // form POST, no JWT possible). Signature-verified inside the handler.

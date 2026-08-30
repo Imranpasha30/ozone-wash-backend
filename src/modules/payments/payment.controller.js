@@ -607,6 +607,61 @@ const PaymentController = {
     }
   },
 
+  // POST /api/v1/payments/refund/close  (admin)
+  // Body: { booking_id | contract_id, note? }
+  // Close a refund case at whatever has ALREADY been refunded — the remaining
+  // refundable balance is treated as SETTLED (waived), no gateway call, no more
+  // money movement. Flips payment_status to 'refunded' (settled) and clears any
+  // in-flight refund rows. Use when admin agrees a partial refund fully settles
+  // the account.
+  closeRefundCase: async (req, res, next) => {
+    try {
+      const { booking_id, contract_id, note } = req.body || {};
+      if (!booking_id && !contract_id) return sendError(res, 'booking_id or contract_id is required', 400);
+      const isAmc = !!contract_id && !booking_id;
+      const table = isAmc ? 'amc_contracts' : 'bookings';   // fixed set — safe to interpolate
+      const idVal = isAmc ? contract_id : booking_id;
+      const label = isAmc ? 'Contract' : 'Booking';
+
+      const { rows } = await db.query(
+        `SELECT id, amount_paise, refunded_paise, payment_status, razorpay_order_id FROM ${table} WHERE id = $1`, [idVal]);
+      if (!rows.length) return sendError(res, `${label} not found`, 404);
+      const row = rows[0];
+      if (!['paid', 'partially_refunded'].includes(row.payment_status)) {
+        return sendError(res, `${label} is already '${row.payment_status}' — nothing to settle.`, 400);
+      }
+      const refunded = Number(row.refunded_paise) || 0;
+      const settledBalance = Math.max(0, Number(row.amount_paise) - refunded);
+
+      // Mark the account settled (closed). Keep refunded_paise as the real amount.
+      await db.query(`UPDATE ${table} SET payment_status = 'refunded', updated_at = NOW() WHERE id = $1`, [idVal]);
+      // Any in-flight refund rows are now considered settled.
+      await db.query(
+        `UPDATE payment_refunds SET status = 'processed', processed_at = COALESCE(processed_at, NOW())
+          WHERE ${isAmc ? 'amc_contract_id' : 'booking_id'} = $1 AND status IN ('initiated','queued','processing')`,
+        [idVal]);
+
+      PaymentLedger.markRefunded(String(row.razorpay_order_id || ''));
+      PaymentLedger.recordEvent({
+        bookingId: isAmc ? null : idVal, contractId: isAmc ? idVal : null,
+        orderId: row.razorpay_order_id, eventType: 'refund_settled', direction: 'neutral',
+        amountPaise: refunded, status: 'settled',
+        note: note || `Case closed — refunded ₹${refunded / 100} of ₹${Number(row.amount_paise) / 100}; ₹${settledBalance / 100} balance settled`,
+        createdBy: req.user?.id || null,
+      });
+
+      return sendSuccess(res, {
+        payment_status: 'refunded',
+        refunded_paise: refunded,
+        settled_balance_paise: settledBalance,
+        refund_status: 'processed',
+      }, `Case closed — ₹${refunded / 100} refunded, ₹${settledBalance / 100} balance settled.`);
+    } catch (err) {
+      if (err?.status) return sendError(res, err.message, err.status);
+      next(err);
+    }
+  },
+
   // POST /api/v1/payments/payu/callback  (no auth — hash-verified)
   // PayU surl/furl target (form POST from the hosted checkout). Verifies the
   // reverse hash, settles the booking/contract server-side (idempotent, atomic),
@@ -775,12 +830,17 @@ const PaymentController = {
     } catch (e) { console.warn('[payu refund webhook] lookup failed:', e?.message); }
 
     if (rf) {
+      const settle = newStatus === 'processed' || newStatus === 'failed';
       try {
+        // NB: keep `status` as the only use of its param — reusing one param as
+        // both a varchar value and inside an IN(...) list makes Postgres throw
+        // "inconsistent types deduced for parameter". Gate processed_at with a
+        // separate boolean param instead.
         await db.query(
           `UPDATE payment_refunds
               SET status = $1,
-                  processed_at = CASE WHEN $1 IN ('processed','failed') THEN NOW() ELSE processed_at END
-            WHERE id = $2`, [newStatus, rf.id]);
+                  processed_at = CASE WHEN $2 THEN NOW() ELSE processed_at END
+            WHERE id = $3`, [newStatus, settle, rf.id]);
       } catch (e) { console.warn('[payu refund webhook] status update failed:', e?.message); }
       PaymentLedger.recordEvent({
         bookingId: rf.booking_id, contractId: rf.amc_contract_id, gateway: 'payu',
