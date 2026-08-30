@@ -11,6 +11,8 @@ const { authenticate, requireRole } = require('../../middleware/auth.middleware'
 const { sendSuccess, sendError } = require('../../utils/response');
 const { adminRouter: incentiveAdminRouter } = require('../incentives/routes');
 const db = require('../../config/db');
+const AuthRepository = require('../auth/auth.repository');
+const NotificationService = require('../../services/notification.service');
 
 const router = express.Router();
 const adminOnly = [authenticate, requireRole('admin')];
@@ -628,6 +630,58 @@ router.get('/schedule-board', adminOnly, async (req, res, next) => {
       crews: crewsRes.rows,
       jobs: jobsRes.rows,
     });
+  } catch (err) { next(err); }
+});
+
+// ── Agent (crew) onboarding via OTP ────────────────────────────────────────
+// Admin fills a form (name + phone), sends an OTP to the person, the person
+// reads it back, and on verify the agent (field_team user) is created/promoted.
+const isPhone = (s) => /^[6-9]\d{9}$/.test(String(s || ''));
+
+// POST /api/v1/admin/agents/send-otp   { phone }
+router.post('/agents/send-otp', adminOnly, async (req, res, next) => {
+  try {
+    const phone = String(req.body?.phone || '').trim();
+    if (!isPhone(phone)) return sendError(res, 'Enter a valid 10-digit mobile number.', 400);
+    const existing = await AuthRepository.findByPhone(phone);
+    if (existing && existing.role === 'field_team') return sendError(res, 'This number is already a field agent.', 400);
+    if (existing && existing.role === 'admin') return sendError(res, 'This number belongs to an admin account.', 400);
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    await AuthRepository.saveOtp(phone, otp, new Date(Date.now() + 10 * 60 * 1000));
+    await Promise.allSettled([NotificationService.sendOtp(phone, otp)]);
+    if (process.env.NODE_ENV !== 'production') console.log(`📱 [agent-onboard] OTP for ${phone}: ${otp}`);
+    return sendSuccess(res, { phone, otp_sent: true }, 'OTP sent to the agent.');
+  } catch (err) { next(err); }
+});
+
+// POST /api/v1/admin/agents/verify   { phone, otp, name }
+// Verifies the OTP the agent read back, then creates a new field_team user (or
+// promotes an existing customer). Existing agents/admins are rejected.
+router.post('/agents/verify', adminOnly, async (req, res, next) => {
+  try {
+    const phone = String(req.body?.phone || '').trim();
+    const otp = String(req.body?.otp || '').trim();
+    const name = (req.body?.name || '').trim() || null;
+    if (!isPhone(phone)) return sendError(res, 'Enter a valid 10-digit mobile number.', 400);
+    if (!/^\d{6}$/.test(otp)) return sendError(res, 'OTP must be 6 digits.', 400);
+    const valid = await AuthRepository.findValidOtp(phone, otp);
+    if (!valid) return sendError(res, 'Invalid or expired OTP. Send a new one.', 400);
+    await AuthRepository.markOtpUsed(phone);
+
+    let agent;
+    const existing = await AuthRepository.findByPhone(phone);
+    if (existing) {
+      if (existing.role === 'admin') return sendError(res, 'This number belongs to an admin account.', 400);
+      const { rows } = await db.query(
+        `UPDATE users SET role = 'field_team', name = COALESCE($2, name)
+           WHERE id = $1 RETURNING id, phone, name, role`,
+        [existing.id, name]
+      );
+      agent = rows[0];
+    } else {
+      agent = await AuthRepository.createUser({ phone, role: 'field_team', name });
+    }
+    return sendSuccess(res, { agent }, 'Agent verified & added.');
   } catch (err) { next(err); }
 });
 
