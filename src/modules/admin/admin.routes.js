@@ -237,7 +237,7 @@ router.get('/ledger', adminOnly, async (req, res, next) => {
         `SELECT COALESCE(SUM(amount_paise),0)::bigint AS gross, COUNT(*)::int AS cnt,
                 COALESCE(SUM(gst_paise),0)::bigint AS gst
            FROM payments
-          WHERE status IN ('captured','cod_collected')
+          WHERE status IN ('captured','cod_collected','refunded','partially_refunded')
             AND COALESCE(captured_at, created_at) >= $1::date
             AND COALESCE(captured_at, created_at) <  ($2::date + INTERVAL '1 day')`,
         [from, to]
@@ -272,7 +272,7 @@ router.get('/ledger', adminOnly, async (req, res, next) => {
                  COALESCE(p.booking_id::text, p.amc_contract_id::text) AS ref,
                  COALESCE(p.method, p.status) AS detail
             FROM payments p LEFT JOIN users u ON u.id = p.user_id
-           WHERE p.status IN ('captured','cod_collected')
+           WHERE p.status IN ('captured','cod_collected','refunded','partially_refunded')
              AND COALESCE(p.captured_at, p.created_at) >= $1::date
              AND COALESCE(p.captured_at, p.created_at) <  ($2::date + INTERVAL '1 day'))
          UNION ALL
