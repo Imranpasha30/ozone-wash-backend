@@ -175,9 +175,30 @@ const settlePayuFromCallback = async (p) => {
   return { status, bookingId, contractId };
 };
 
-/** Web-app return URL (APP_WEB_URL + result query). '' when APP_WEB_URL is unset. */
-const buildWebReturnUrl = (status, bookingId, contractId, txnid) => {
-  const webBase = (process.env.APP_WEB_URL || '').replace(/\/+$/, '');
+/**
+ * Allowlist of permitted web-return bases. Set APP_WEB_URLS to a comma-separated
+ * list (first entry is the default), e.g.
+ *   APP_WEB_URLS=https://app.ozonewash.in,http://localhost:8081
+ * so prod redirects to prod and local testing redirects to localhost. Falls back
+ * to the single APP_WEB_URL for backwards-compat.
+ */
+const webReturnBases = () =>
+  (process.env.APP_WEB_URLS || process.env.APP_WEB_URL || '')
+    .split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
+
+/** Pick a return base from a client-supplied candidate, but ONLY if it's on the
+ *  allowlist (prevents open-redirect). Otherwise use the default (first) base. */
+const pickWebBase = (candidate) => {
+  const bases = webReturnBases();
+  const c = String(candidate || '').trim().replace(/\/+$/, '');
+  return bases.includes(c) ? c : (bases[0] || '');
+};
+
+/** Web-app return URL (allowlisted base + result query). '' when none configured.
+ *  `rt` is the initiating origin echoed back via the surl — validated here so a
+ *  client can only ever be redirected to a base the server explicitly allows. */
+const buildWebReturnUrl = (status, bookingId, contractId, txnid, rt) => {
+  const webBase = pickWebBase(rt);
   if (!webBase) return '';
   const qs = new URLSearchParams({ ozw_payment: status });
   if (bookingId) qs.set('booking_id', bookingId);
@@ -221,7 +242,8 @@ const PaymentController = {
 
       const customer = await customerForUser(req.user.id);
       const order = await PaymentService.createOrder(
-        chargeAmountPaise(booking.amount_paise), booking_id, customer, { channel: req.body.channel });
+        chargeAmountPaise(booking.amount_paise), booking_id, customer,
+        { channel: req.body.channel, returnBase: req.headers.origin });
 
       await BookingRepository.updatePayment(booking_id, {
         razorpay_order_id: order.order_id,
@@ -491,7 +513,7 @@ const PaymentController = {
   payuCallbackWeb: async (req, res) => {
     const p = req.body || {};
     const { status, bookingId, contractId } = await settlePayuFromCallback(p);
-    const webReturn = buildWebReturnUrl(status, bookingId, contractId, p.txnid);
+    const webReturn = buildWebReturnUrl(status, bookingId, contractId, p.txnid, req.query.rt);
     if (webReturn) return res.redirect(302, webReturn);
     // APP_WEB_URL not configured — show a minimal static confirmation instead.
     return res.set('Content-Type', 'text/html').send(`<!doctype html>
@@ -609,7 +631,8 @@ const PaymentController = {
 
       const customer = await customerForUser(req.user.id);
       const order = await PaymentService.createOrder(
-        chargeAmountPaise(contract.amount_paise), contract_id, customer, { channel: req.body.channel });
+        chargeAmountPaise(contract.amount_paise), contract_id, customer,
+        { channel: req.body.channel, returnBase: req.headers.origin });
 
       await AmcRepository.updatePayment(contract_id, {
         razorpay_order_id: order.order_id,

@@ -60,9 +60,16 @@ async function createOrder(amountPaise, refId, customer = {}, opts = {}) {
   // Web checkout is a full-page redirect, so it needs a callback that issues a
   // real HTTP 302 back to the web app; the mobile WebView uses the postMessage
   // callback. Pick the surl by channel (anything other than 'web' = mobile).
-  const surl = opts.channel === 'web'
+  let surl = opts.channel === 'web'
     ? `${appUrl}/api/v1/payments/payu/callback/web`
     : `${appUrl}/api/v1/payments/payu/callback`;
+  // Echo the initiating web origin back via the surl so the web callback can
+  // redirect to the right front-end (localhost while testing, prod otherwise).
+  // It is only HONORED if it's on the server's APP_WEB_URLS allowlist (the
+  // callback validates it) — so this can't become an open redirect.
+  if (opts.channel === 'web' && opts.returnBase) {
+    surl += (surl.includes('?') ? '&' : '?') + `rt=${encodeURIComponent(opts.returnBase)}`;
+  }
   const furl = surl;
 
   if (!isConfigured()) {
