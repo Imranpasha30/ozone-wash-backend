@@ -344,7 +344,10 @@ const PaymentController = {
       });
       PaymentLedger.recordCreated({
         userId: req.user.id, bookingId: booking_id, orderId: order.order_id,
-        amountPaise: booking.amount_paise, method: booking.payment_method, gateway: order.gateway,
+        // Ledger records the ACTUAL amount charged at the gateway (the money that
+        // really moves) — equals booking.amount_paise in prod, or the ₹1 test
+        // override in sandbox. The booking/invoice keep the full service price.
+        amountPaise: chargeAmountPaise(booking.amount_paise), method: booking.payment_method, gateway: order.gateway,
       });
 
       return sendSuccess(res, {
@@ -907,7 +910,8 @@ const PaymentController = {
       });
       PaymentLedger.recordCreated({
         userId: req.user.id, contractId: contract_id, orderId: order.order_id,
-        amountPaise: contract.amount_paise, method: 'amc', gateway: order.gateway,
+        // Actual charged amount (real money moved) — see createOrder note.
+        amountPaise: chargeAmountPaise(contract.amount_paise), method: 'amc', gateway: order.gateway,
       });
 
       return sendSuccess(res, {
