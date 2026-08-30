@@ -91,8 +91,13 @@ const JobController = {
       if (!errors.isEmpty()) {
         return sendError(res, 'Validation failed', 400, errors.array());
       }
-      const { team_id, force } = req.body;
-      const job = await JobService.assignTeam(req.params.id, team_id, { force: force === true || force === 'true' });
+      const { team_id, field_team_id, force } = req.body;
+      const opts = { force: force === true || force === 'true' };
+      // Prefer whole-crew (field_team) assignment; fall back to the legacy
+      // single-agent path when only team_id is supplied.
+      const job = field_team_id
+        ? await JobService.assignFieldTeam(req.params.id, field_team_id, opts)
+        : await JobService.assignTeam(req.params.id, team_id, opts);
       JobRepository.findById(req.params.id).then(fullJob => {
         if (fullJob) {
           NotificationService.onTeamAssigned(
@@ -327,10 +332,11 @@ const JobController = {
       if (!errors.isEmpty()) {
         return sendError(res, 'Validation failed', 400, errors.array());
       }
-      const { new_team_id, reason } = req.body;
+      const { new_team_id, reason, force } = req.body;
       const job = await JobService.transferJob(
         req.params.id, new_team_id, reason || 'No reason provided',
-        req.user.id, req.user.role
+        req.user.id, req.user.role,
+        { force: force === true || force === 'true' }
       );
       // Notify new team member
       JobRepository.findById(req.params.id).then(fullJob => {
@@ -397,7 +403,8 @@ const JobController = {
   // PATCH /api/v1/jobs/requests/:requestId/approve (admin)
   approveJobRequest: async (req, res, next) => {
     try {
-      const result = await JobService.approveJobRequest(req.params.requestId);
+      const { force } = req.body || {};
+      const result = await JobService.approveJobRequest(req.params.requestId, { force: force === true || force === 'true' });
       // Notify the team member
       JobRepository.findById(result.job_id).then(fullJob => {
         if (fullJob) {

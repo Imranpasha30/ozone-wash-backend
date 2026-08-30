@@ -213,9 +213,9 @@ const AutoWashController = {
 
   adminAssignJob: async (req, res, next) => {
     try {
-      const { crew_id, ev_unit_id } = req.body;
+      const { crew_id, ev_unit_id, force } = req.body;
       if (!crew_id) throw { status: 400, message: 'crew_id is required' };
-      const r = await service.adminAssignJob(req.params.id, crew_id, ev_unit_id || null);
+      const r = await service.adminAssignJob(req.params.id, crew_id, ev_unit_id || null, { force: force === true || force === 'true' });
       return sendSuccess(res, { job: r }, 'Job assigned');
     } catch (e) { next(e); }
   },

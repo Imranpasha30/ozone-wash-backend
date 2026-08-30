@@ -14,10 +14,21 @@ const router = express.Router();
 
 // ── Validation rules ──────────────────────────────────────────────────────────
 
+// Assign accepts EITHER a field_team_id (whole crew — preferred) OR the legacy
+// single-agent team_id. At least one must be a valid UUID.
 const assignTeamValidation = [
   body('team_id')
-    .notEmpty().withMessage('Team ID is required')
-    .isUUID().withMessage('Team ID must be a valid UUID'),
+    .optional({ nullable: true })
+    .isUUID().withMessage('team_id must be a valid UUID'),
+  body('field_team_id')
+    .optional({ nullable: true })
+    .isUUID().withMessage('field_team_id must be a valid UUID'),
+  body().custom((_, { req }) => {
+    if (!req.body?.team_id && !req.body?.field_team_id) {
+      throw new Error('team_id or field_team_id is required');
+    }
+    return true;
+  }),
 ];
 
 const transferValidation = [

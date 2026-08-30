@@ -7,6 +7,80 @@ const { sendSuccess, sendError } = require('../../utils/response');
 const db = require('../../config/db');
 const PaymentLedger = require('./payment.ledger');
 
+/**
+ * Reinstate the holding job(s) the 5-min hold-sweep cancelled — but ONLY if the
+ * slot still has capacity in its resource pool. A late gateway settle can
+ * otherwise double-commit a slot that was resold while the payment was in
+ * flight (money captured on BOTH bookings). If the slot refilled, leave the job
+ * cancelled and raise a critical admin alert so the now-paid booking gets a
+ * reschedule/refund — never silently overbook.
+ *
+ * Serialized under the SAME per-date advisory lock the booking-create path uses,
+ * so the capacity read + reinstate is atomic against a concurrent booking that
+ * would take the last van. Fail-safe: if capacity can't be verified we do NOT
+ * reinstate (never risk a double-commit) and alert instead.
+ */
+const reinstateHoldingJobs = async (bookingId) => {
+  const SchedulingService = require('../../services/scheduling.service');
+  const AdminAlertsService = require('../admin-alerts/admin-alerts.service');
+  let jobs = [];
+  try {
+    const { rows } = await db.query(
+      `SELECT id, scheduled_at, duration_min, resource_type,
+              assigned_team_id, assigned_field_team_id
+         FROM jobs WHERE booking_id = $1 AND status = 'cancelled'`,
+      [bookingId]
+    );
+    jobs = rows;
+  } catch (e) {
+    console.warn('[reinstate] could not load holding jobs:', e?.message);
+    return;
+  }
+  for (const job of jobs) {
+    let release = null;
+    try {
+      release = await SchedulingService.acquireSlotLock(SchedulingService.toDateKey(job.scheduled_at));
+      // Re-read under the lock — a racing settle (webhook + verify) may have
+      // already reinstated this job. Skip if so (no double-work, no false alert).
+      const cur = await db.query(`SELECT status FROM jobs WHERE id = $1`, [job.id]);
+      if (!cur.rows.length || cur.rows[0].status !== 'cancelled') continue;
+
+      const cap = await SchedulingService.capacityOk(job.scheduled_at, job.duration_min, job.resource_type || 'tank');
+      if (!cap.ok) {
+        console.error(`🚨 [reinstate] slot RESOLD for paid booking ${bookingId} (job ${job.id}, ${cap.busy}/${cap.vans} full) — left cancelled, needs reschedule/refund`);
+        await AdminAlertsService.recordSlotResold({ bookingId, jobId: job.id, slotTime: job.scheduled_at }).catch(() => {});
+        continue;
+      }
+
+      if (job.assigned_team_id || job.assigned_field_team_id) {
+        // Rare: an admin had already assigned this still-pending hold. The crew
+        // may have been booked into an overlapping job (or gone off) during the
+        // hold — resurrecting it ASSIGNED would silently double-book. Reinstate
+        // UNASSIGNED so it re-enters the guarded assignment flow, and alert ops.
+        await db.query(
+          `UPDATE jobs SET status = 'scheduled', assigned_team_id = NULL,
+                  assigned_field_team_id = NULL, updated_at = NOW()
+            WHERE id = $1 AND status = 'cancelled'`,
+          [job.id]
+        );
+        console.warn(`⚠️ [reinstate] job ${job.id} reinstated UNASSIGNED for paid booking ${bookingId} (prior crew must be re-verified)`);
+        await AdminAlertsService.recordSlotResold({ bookingId, jobId: job.id, slotTime: job.scheduled_at, reason: 'reinstated_unassigned' }).catch(() => {});
+      } else {
+        await db.query(
+          `UPDATE jobs SET status = 'scheduled', updated_at = NOW() WHERE id = $1 AND status = 'cancelled'`,
+          [job.id]
+        );
+        console.log(`✅ [reinstate] job ${job.id} reinstated for paid booking ${bookingId} (slot still open, ${cap.busy}/${cap.vans})`);
+      }
+    } catch (e) {
+      console.error(`🚨 [reinstate] capacity check failed for booking ${bookingId} (job ${job.id}) — left cancelled:`, e?.message);
+      await AdminAlertsService.recordSlotResold({ bookingId, jobId: job.id, slotTime: job.scheduled_at, reason: 'capacity_check_failed' }).catch(() => {});
+    } finally {
+      if (release) await release().catch(() => {});
+    }
+  }
+};
+
 /** Issue a GST invoice on payment success — fire-and-forget, never blocks. */
 const issueBookingInvoice = (bookingId, result) =>
   InvoiceService.createInvoiceForBooking(bookingId, {
@@ -79,9 +153,10 @@ const settleByOrderId = async (orderId, paymentId, gateway = 'razorpay') => {
   );
   if (b.rows.length) {
     await BookingRepository.updateStatus(b.rows[0].id, 'confirmed');
-    // If the 8-min hold-sweep had already cancelled the holding job (payment
-    // landed late), reinstate it so the now-paid booking is serviceable again.
-    await db.query(`UPDATE jobs SET status = 'scheduled' WHERE booking_id = $1 AND status = 'cancelled'`, [b.rows[0].id]).catch(() => {});
+    // If the hold-sweep had already cancelled the holding job (payment landed
+    // late), reinstate it — but ONLY if the slot still has capacity. A resold
+    // slot is left cancelled + flagged for reschedule/refund (no double-commit).
+    await reinstateHoldingJobs(b.rows[0].id).catch((e) => console.warn('[reinstate] settle path:', e?.message));
     await activateLinkedAmc({ id: b.rows[0].id, amc_contract_id: b.rows[0].amc_contract_id },
       { order_id: orderId, payment_id: paymentId });
     PaymentLedger.markCaptured(orderId, { paymentId, gateway });
@@ -320,8 +395,9 @@ const PaymentController = {
       });
 
       await BookingRepository.updateStatus(booking_id, 'confirmed');
-      // Reinstate the holding job if the 8-min sweep cancelled it (late payment).
-      await db.query(`UPDATE jobs SET status = 'scheduled' WHERE booking_id = $1 AND status = 'cancelled'`, [booking_id]).catch(() => {});
+      // Reinstate the holding job if the sweep cancelled it (late payment) —
+      // capacity-checked so a resold slot isn't silently double-committed.
+      await reinstateHoldingJobs(booking_id).catch((e) => console.warn('[reinstate] verify path:', e?.message));
       PaymentLedger.markCaptured(providedOrderId, { paymentId: result.payment_id, gateway: result.gateway });
 
       // AMC purchased at checkout → activate; this booking = visit #1 of the plan.
@@ -365,6 +441,10 @@ const PaymentController = {
           payment_status: 'paid',
         });
         await BookingRepository.updateStatus(rows[0].id, 'confirmed');
+        // Same capacity-checked reinstate as the verify / PayU / Razorpay paths —
+        // a late Easebuzz settle must not strand a paid booking with a cancelled
+        // job (invisible to the crew) or silently overbook a resold slot.
+        await reinstateHoldingJobs(rows[0].id).catch((e) => console.warn('[reinstate] easebuzz path:', e?.message));
         await activateLinkedAmc(booking, { order_id: p.txnid, payment_id: result.payment_id });
         issueBookingInvoice(rows[0].id, result);
         settled = true;

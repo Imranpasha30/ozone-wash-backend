@@ -72,8 +72,44 @@ const JobService = {
     return job;
   },
 
+  // Shared crew guard for EVERY assignment path (admin assign, request approve,
+  // transfer). Serializes per crew+date with an advisory lock, then rejects with
+  // 409 if the crew is unavailable (leave/sick/off or job outside their shift)
+  // or already has a duration-aware OVERLAPPING job. `opts.force=true` is an
+  // explicit admin override. `write()` performs the actual DB mutation once the
+  // guard passes. Unassign (no teamId) and forced writes skip the checks.
+  _guardedAssign: async (job, teamId, opts = {}, write) => {
+    const force = opts.force === true;
+    const excludeJobId = opts.excludeJobId !== undefined ? opts.excludeJobId : job.id;
+    if (!teamId || force) {
+      return await write();
+    }
+    const SchedulingService = require('../../services/scheduling.service');
+    const dateKey = SchedulingService.toDateKey(job.scheduled_at);
+    const release = await SchedulingService.acquireSlotLock(`crew:${teamId}:${dateKey}`);
+    try {
+      // 1) Availability — crew on leave/sick/off, or job outside their shift.
+      const unavailable = await SchedulingService.crewAvailabilityBlock(teamId, job.scheduled_at, job.duration_min);
+      if (unavailable) {
+        throw { status: 409, message: `${unavailable} Reassign, or override.` };
+      }
+      // 2) Duration-aware double-booking — one crew, two overlapping jobs.
+      const clash = await SchedulingService.crewOverlap(teamId, job.scheduled_at, job.duration_min, excludeJobId);
+      if (clash) {
+        const when = new Date(clash.scheduled_at).toLocaleString('en-IN', {
+          day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true,
+        });
+        throw { status: 409, message: `That crew already has an overlapping job on ${when}. Reassign that first, or override.` };
+      }
+      return await write();
+    } finally {
+      await release();
+    }
+  },
+
   // Assign field team to a job (admin only). Blocks double-booking one crew into
-  // overlapping jobs; pass opts.force=true to override deliberately.
+  // overlapping jobs and blocks unavailable crews; pass opts.force=true to
+  // override deliberately.
   assignTeam: async (jobId, teamId, opts = {}) => {
     // Check job exists
     const job = await JobRepository.findById(jobId);
@@ -89,30 +125,30 @@ const JobService = {
       throw { status: 400, message: 'Cannot assign team to a completed job.' };
     }
 
-    // Conflict guard: prevent putting one crew on two OVERLAPPING jobs. Serialize
-    // per crew+date with an advisory lock so two concurrent assigns can't both
-    // pass the check. Default is BLOCK (409); opts.force is an explicit override.
-    if (teamId && !opts.force) {
-      const SchedulingService = require('../../services/scheduling.service');
-      const dateKey = String(job.scheduled_at).slice(0, 10);
-      const release = await SchedulingService.acquireSlotLock(`crew:${teamId}:${dateKey}`);
-      try {
-        const clash = await SchedulingService.crewOverlap(teamId, job.scheduled_at, job.duration_min, jobId);
-        if (clash) {
-          const when = new Date(clash.scheduled_at).toLocaleString('en-IN', {
-            day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true,
-          });
-          throw { status: 409, message: `That crew already has an overlapping job on ${when}. Reassign that first, or override.` };
-        }
-        return await JobRepository.assignTeam(jobId, teamId);
-      } finally {
-        await release();
-      }
+    return await JobService._guardedAssign(job, teamId, opts, () => JobRepository.assignTeam(jobId, teamId));
+  },
+
+  // Assign a whole FIELD TEAM (crew) to a job — the preferred admin path. Sets
+  // assigned_field_team_id (so every member sees it + incentives split) AND the
+  // legacy assigned_team_id = the team's lead agent (so older queries and the
+  // crew guard, which keys on assigned_team_id, keep working). opts.force
+  // overrides the overlap/availability guard.
+  assignFieldTeam: async (jobId, fieldTeamId, opts = {}) => {
+    const job = await JobRepository.findById(jobId);
+    if (!job) throw { status: 404, message: 'Job not found.' };
+    if (job.status === 'cancelled') throw { status: 400, message: 'Cannot assign team to a cancelled job.' };
+    if (job.status === 'completed') throw { status: 400, message: 'Cannot assign team to a completed job.' };
+
+    const TeamsRepo = require('../teams/teams.repository');
+    const team = await TeamsRepo.findById(fieldTeamId);
+    if (!team || team.is_active === false) {
+      throw { status: 400, message: 'Team not found or inactive.' };
     }
 
-    // No team (unassign) or explicit override → assign directly.
-    const updated = await JobRepository.assignTeam(jobId, teamId);
-    return updated;
+    // Guard on the lead agent — that's the identity that lands in
+    // assigned_team_id and the one the overlap/availability checks key on.
+    return await JobService._guardedAssign(job, team.leader_id, opts,
+      () => JobRepository.assignToFieldTeam(jobId, team.id, team.leader_id));
   },
 
   // Start a job (field team)
@@ -422,7 +458,7 @@ const JobService = {
 
   // ── Transfer ────────────────────────────────────────────────────────────
 
-  transferJob: async (jobId, newTeamId, reason, userId, userRole) => {
+  transferJob: async (jobId, newTeamId, reason, userId, userRole, opts = {}) => {
     const job = await JobRepository.findById(jobId);
     if (!job) throw { status: 404, message: 'Job not found.' };
 
@@ -439,8 +475,9 @@ const JobService = {
       throw { status: 400, message: 'Job is already assigned to this team member.' };
     }
 
-    const updated = await JobRepository.transferJob(jobId, newTeamId, reason);
-    return updated;
+    // Same crew guard as assign/approve — the destination crew can't be
+    // double-booked or unavailable (unless opts.force overrides).
+    return await JobService._guardedAssign(job, newTeamId, opts, () => JobRepository.transferJob(jobId, newTeamId, reason));
   },
 
   // Get list of all field team members (admin — for assignment dropdown)
@@ -485,13 +522,19 @@ const JobService = {
     return await JobRepository.findRequestsByTeam(teamId);
   },
 
-  // Admin approves a job request (assigns the team)
-  approveJobRequest: async (requestId) => {
+  // Admin approves a job request (assigns the team). Runs the SAME crew guard
+  // as a direct assign — a request can't be used to sneak a crew into an
+  // overlapping job or onto a day they're unavailable. opts.force overrides.
+  approveJobRequest: async (requestId, opts = {}) => {
     const request = await JobRepository.findRequestById(requestId);
     if (!request) throw { status: 404, message: 'Request not found.' };
     if (request.status !== 'pending') throw { status: 400, message: 'Request is no longer pending.' };
     if (request.job_status !== 'scheduled') throw { status: 400, message: 'Job is no longer available.' };
     if (request.assigned_team_id) throw { status: 400, message: 'Job is already assigned.' };
+
+    // Full job row is needed for the guard (scheduled_at + duration_min).
+    const job = await JobRepository.findById(request.job_id);
+    if (!job) throw { status: 404, message: 'Job not found.' };
 
     // Resolve the requester's current team. If they belong to one, the
     // whole team takes the job (assigned_field_team_id is set so every
@@ -501,11 +544,18 @@ const JobService = {
     const TeamsRepo = require('../teams/teams.repository');
     const team = await TeamsRepo.findTeamForAgent(request.team_id);
 
-    if (team) {
-      await JobRepository.assignToFieldTeam(request.job_id, team.id, request.team_id);
-    } else {
-      await JobRepository.assignTeam(request.job_id, request.team_id);
-    }
+    // When the requester belongs to a team, the whole crew takes the job and the
+    // guard/overlap must key on the team's LEAD agent — the same identity the
+    // board and assignFieldTeam use — otherwise a non-leader member's request
+    // could bypass the leader-keyed double-booking/availability guard. Solo
+    // requesters (no team) keep their single-agent identity.
+    const guardId = team ? team.leader_id : request.team_id;
+    await JobService._guardedAssign(job, guardId, opts, () => {
+      if (team) {
+        return JobRepository.assignToFieldTeam(request.job_id, team.id, team.leader_id);
+      }
+      return JobRepository.assignTeam(request.job_id, request.team_id);
+    });
 
     // Approve this request and reject all other pending requests for this job
     await JobRepository.updateRequestStatus(requestId, 'approved');
@@ -513,12 +563,11 @@ const JobService = {
 
     // Fire-and-forget: did we just overcommit this technician?
     try {
-      const job = await JobRepository.findById(request.job_id);
       const AdminAlertsService = require('../admin-alerts/admin-alerts.service');
       AdminAlertsService.detectBookingConflicts({
         jobId: request.job_id,
         slotTime: job?.scheduled_at,
-        teamId: request.team_id,
+        teamId: guardId,
       }).catch((e) => { console.warn('[alerts] approve detect failed:', e?.message); });
     } catch (_) {}
 

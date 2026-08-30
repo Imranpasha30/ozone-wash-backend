@@ -268,7 +268,7 @@ const BookingService = {
       const need = await SchedulingService.durationFor(tankList);
       durationMin = need.duration_min;
       releaseSlotLock = await SchedulingService.acquireSlotLock(String(data.slot_time).slice(0, 10));
-      const cap = await SchedulingService.capacityOk(data.slot_time, durationMin);
+      const cap = await SchedulingService.capacityOk(data.slot_time, durationMin, 'tank');
       if (!cap.ok) {
         throw { status: 409, message: `That slot just filled up — all ${cap.vans} crew(s) are booked for this window. Pick another slot.` };
       }

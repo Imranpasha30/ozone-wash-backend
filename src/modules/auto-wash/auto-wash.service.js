@@ -725,8 +725,20 @@ async function adminListJobs(filters) {
   return repo.adminListJobs(filters);
 }
 
-async function adminAssignJob(jobId, crewId, evUnitId) {
-  const row = await repo.adminAssignJobToCrew(jobId, crewId, evUnitId);
+async function adminAssignJob(jobId, crewId, evUnitId, opts = {}) {
+  // Run the SAME crew guard as tank jobs — a physical crew can only be in one
+  // place at a time, and tank + auto-wash jobs share assigned_team_id, so an
+  // auto-wash assign must not double-book a crew already on an overlapping job
+  // (or one marked leave/sick/off). crewOverlap is resource-agnostic, so it
+  // catches tank↔auto-wash clashes too. opts.force overrides (409 otherwise).
+  const existing = await repo.findAutoWashJobById(jobId);
+  if (!existing) throw { status: 404, message: 'Auto-wash job not found.' };
+  const JobService = require('../jobs/job.service');
+  const row = await JobService._guardedAssign(
+    { id: jobId, scheduled_at: existing.scheduled_at, duration_min: existing.duration_min },
+    crewId, opts,
+    () => repo.adminAssignJobToCrew(jobId, crewId, evUnitId)
+  );
   if (!row) throw { status: 404, message: 'Auto-wash job not found.' };
 
   // Notify customer that a crew has been assigned (stub — Wati TODO).

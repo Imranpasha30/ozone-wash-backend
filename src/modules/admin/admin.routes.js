@@ -476,4 +476,159 @@ router.put('/amc-plans/:plan', adminOnly, async (req, res, next) => {
   }
 });
 
+// ── Crew availability (leave / sick / off / shift window) ──────────────────
+// Drives the effective van count AND the assignment guard. Keyed by agent+date.
+
+const CREW_STATUSES = ['working', 'leave', 'sick', 'off'];
+const isYmd = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
+// Accept 'HH:MM' or 'HH:MM:SS' (or null/'' to clear).
+const normTime = (t) => {
+  if (t == null || t === '') return null;
+  const m = /^(\d{2}):(\d{2})(?::\d{2})?$/.exec(String(t).trim());
+  return m ? `${m[1]}:${m[2]}` : undefined; // undefined → invalid
+};
+
+// GET /api/v1/admin/crew-availability?date=YYYY-MM-DD
+// Every field_team crew with their availability for the date (defaults to
+// 'working' when no row exists).
+router.get('/crew-availability', adminOnly, async (req, res, next) => {
+  try {
+    const date = String(req.query.date || '').slice(0, 10);
+    if (!isYmd(date)) return sendError(res, 'date is required (YYYY-MM-DD)', 400);
+    const { rows } = await db.query(
+      `SELECT u.id AS agent_id, u.name, u.phone,
+              COALESCE(ca.status, 'working') AS status,
+              ca.shift_start, ca.shift_end, ca.note
+         FROM users u
+         LEFT JOIN crew_availability ca
+           ON ca.agent_id = u.id AND ca.date = $1
+        WHERE u.role = 'field_team'
+        ORDER BY u.name ASC NULLS LAST, u.phone ASC`,
+      [date]
+    );
+    return sendSuccess(res, { date, crews: rows });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/v1/admin/crew-availability
+// Body: { agent_id, date, status, shift_start?, shift_end?, note? }
+// Upsert one crew's availability for a day. Setting status='working' with no
+// shift window is the same as "available all day".
+router.put('/crew-availability', adminOnly, async (req, res, next) => {
+  try {
+    const { agent_id, date, status, note } = req.body || {};
+    if (!isUuid(agent_id)) return sendError(res, 'agent_id must be a valid UUID', 400);
+    if (!isYmd(date)) return sendError(res, 'date is required (YYYY-MM-DD)', 400);
+    if (!CREW_STATUSES.includes(status)) {
+      return sendError(res, `status must be one of ${CREW_STATUSES.join(', ')}`, 400);
+    }
+    const shift_start = normTime(req.body?.shift_start);
+    const shift_end = normTime(req.body?.shift_end);
+    if (shift_start === undefined || shift_end === undefined) {
+      return sendError(res, 'shift_start/shift_end must be HH:MM', 400);
+    }
+    if (shift_start && shift_end && shift_start >= shift_end) {
+      return sendError(res, 'shift_start must be before shift_end', 400);
+    }
+    // Availability is only meaningful for actual crews — reject other roles so a
+    // mis-keyed id can't corrupt the effective van count.
+    const who = await db.query(`SELECT 1 FROM users WHERE id = $1 AND role = 'field_team'`, [agent_id]);
+    if (!who.rows.length) return sendError(res, 'agent_id must be a field-team crew member.', 400);
+    const { rows } = await db.query(
+      `INSERT INTO crew_availability (agent_id, date, status, shift_start, shift_end, note, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (agent_id, date) DO UPDATE SET
+         status = EXCLUDED.status,
+         shift_start = EXCLUDED.shift_start,
+         shift_end = EXCLUDED.shift_end,
+         note = EXCLUDED.note,
+         updated_at = NOW()
+       RETURNING *`,
+      [agent_id, date, status, shift_start, shift_end, note || null,
+       req.user?.phone || req.user?.id || 'admin']
+    );
+    return sendSuccess(res, { availability: rows[0] }, 'Availability updated');
+  } catch (err) {
+    if (err?.code === '23503') return sendError(res, 'Unknown crew (agent_id).', 400);
+    next(err);
+  }
+});
+
+// DELETE /api/v1/admin/crew-availability?agent_id=&date=  — clear back to default (working)
+router.delete('/crew-availability', adminOnly, async (req, res, next) => {
+  try {
+    const agent_id = String(req.query.agent_id || '');
+    const date = String(req.query.date || '').slice(0, 10);
+    if (!isUuid(agent_id) || !isYmd(date)) return sendError(res, 'valid agent_id (UUID) and date (YYYY-MM-DD) are required', 400);
+    await db.query(`DELETE FROM crew_availability WHERE agent_id = $1 AND date = $2`, [agent_id, date]);
+    return sendSuccess(res, { agent_id, date, status: 'working' }, 'Availability cleared');
+  } catch (err) { next(err); }
+});
+
+// GET /api/v1/admin/schedule-board?date=YYYY-MM-DD
+// Everything the crew × time-slot board needs in one round-trip: the workday
+// grid config, the crew lanes (with availability), and the day's job blocks.
+router.get('/schedule-board', adminOnly, async (req, res, next) => {
+  try {
+    const date = String(req.query.date || '').slice(0, 10);
+    if (!isYmd(date)) return sendError(res, 'date is required (YYYY-MM-DD)', 400);
+    const SchedulingService = require('../../services/scheduling.service');
+    const s = await SchedulingService.settings();
+
+    const [crewsRes, jobsRes] = await Promise.all([
+      // Crews = FIELD TEAMS. Availability is keyed on the team's lead agent
+      // (assigned_team_id = leader_id), so leave/sick/off set on the board maps
+      // straight through to the assignment guard + effective van count.
+      db.query(
+        `SELECT t.id AS team_id, t.name, t.leader_id,
+                lu.name AS leader_name, lu.phone AS leader_phone,
+                (SELECT COUNT(*) FROM field_team_members m
+                  WHERE m.team_id = t.id AND m.is_active = TRUE)::int AS member_count,
+                COALESCE(ca.status, 'working') AS status,
+                ca.shift_start, ca.shift_end, ca.note
+           FROM field_teams t
+           JOIN users lu ON lu.id = t.leader_id
+           LEFT JOIN crew_availability ca
+             ON ca.agent_id = t.leader_id AND ca.date = $1
+          WHERE t.is_active = TRUE
+          ORDER BY t.name ASC NULLS LAST`,
+        [date]
+      ),
+      db.query(
+        `SELECT j.id, j.assigned_team_id, j.assigned_field_team_id, j.scheduled_at,
+                COALESCE(j.duration_min, 120) AS duration_min,
+                j.resource_type, j.status, j.job_type,
+                c.name AS customer_name, c.phone AS customer_phone,
+                b.tank_type, b.tank_size_litres, b.address,
+                ft.name AS field_team_name,
+                v.vehicle_type, v.registration_number
+           FROM jobs j
+           JOIN users c ON c.id = j.customer_id
+           LEFT JOIN bookings b ON b.id = j.booking_id
+           LEFT JOIN field_teams ft ON ft.id = j.assigned_field_team_id
+           LEFT JOIN vehicles v ON v.id = j.vehicle_id
+          WHERE DATE(j.scheduled_at) = $1
+            AND j.status IN ('scheduled', 'in_progress', 'completed')
+          ORDER BY j.scheduled_at ASC`,
+        [date]
+      ),
+    ]);
+
+    const effTank = await SchedulingService.effectiveVans(date, 'tank');
+    return sendSuccess(res, {
+      date,
+      config: {
+        workday_start: s.workday_start,
+        workday_end: s.workday_end,
+        slot_step_min: s.slot_step_min,
+        vans: s.vans,
+        effective_vans_tank: effTank,
+      },
+      crews: crewsRes.rows,
+      jobs: jobsRes.rows,
+    });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;

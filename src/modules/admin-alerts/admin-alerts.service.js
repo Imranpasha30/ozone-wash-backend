@@ -215,6 +215,37 @@ const AdminAlertsService = {
   },
 
   /**
+   * Critical alert when a late gateway settle can't cleanly reinstate a
+   * hold-swept job. Two cases (by `reason`):
+   *   - 'reinstated_unassigned' — the slot had room so the job WAS reinstated,
+   *     but it had a stale crew assignment that could now overlap, so it came
+   *     back UNASSIGNED and needs a crew.
+   *   - otherwise — the slot was already resold; the paid booking stays
+   *     cancelled and needs a manual reschedule or refund (never overbooked).
+   * De-duped per booking/job.
+   */
+  recordSlotResold: async ({ bookingId = null, jobId = null, slotTime = null, reason = null } = {}) => {
+    const dup = await Repo.findRecentDuplicate({
+      type: 'slot_resold',
+      related_booking_id: bookingId, related_job_id: jobId, related_team_id: null,
+    });
+    if (dup) return null;
+    const when = slotTime ? new Date(slotTime).toLocaleString('en-IN') : 'the held slot';
+    const reinstated = reason === 'reinstated_unassigned';
+    return Repo.create({
+      type: 'slot_resold',
+      severity: 'critical',
+      title: reinstated ? 'Paid booking reinstated — needs a crew' : 'Paid booking — slot already resold',
+      message: reinstated
+        ? `A late payment reinstated the ${when} booking, but its earlier crew may now be double-booked — it was reinstated WITHOUT a crew. Assign a crew from the schedule board.`
+        : `A payment settled after its ${when} hold expired, but that slot was already taken. The booking is PAID and needs a reschedule or refund — it was NOT auto-reinstated (would have overbooked the crew).`,
+      related_booking_id: bookingId,
+      related_job_id: jobId,
+      metadata: { slot_time: slotTime, reason: reason || 'slot_full' },
+    });
+  },
+
+  /**
    * Cron-driven sweep that detects time-sensitive conditions:
    *   - jobs created >3 h ago but still unassigned
    *   - jobs scheduled in <1 h with no team

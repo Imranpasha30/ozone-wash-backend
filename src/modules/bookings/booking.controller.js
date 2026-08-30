@@ -23,7 +23,7 @@ const BookingController = {
       if (tank_sizes) {
         const SchedulingService = require('../../services/scheduling.service');
         const sizes = String(tank_sizes).split(',').map(Number).filter((n) => Number.isFinite(n) && n > 0);
-        const out = await SchedulingService.slotsForDate(date, sizes, locations ? Number(locations) : null);
+        const out = await SchedulingService.slotsForDate(date, sizes, locations ? Number(locations) : null, 'tank');
         return sendSuccess(res, out);
       }
 
