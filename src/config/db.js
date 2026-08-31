@@ -37,7 +37,14 @@ const pool = new Pool({
 
 // ── Logging — collapsed, dev-only, only first few connects so the log isn't spammy
 let connectCount = 0;
-pool.on('connect', () => {
+pool.on('connect', (client) => {
+  // Force every session to IST. The DB default (ALTER DATABASE … SET timezone,
+  // migration 036) is NOT honored through the Supabase pooler, so pin it here.
+  // node-pg serializes queries per client, so this SET runs before the first
+  // app query on the socket (no race). Makes naive slot strings cast to IST on
+  // write and DATE()/CURRENT_DATE bucket by the India business day.
+  client.query("SET TIME ZONE 'Asia/Kolkata'").catch((e) =>
+    console.error('[db] failed to set session TZ to IST:', e.message));
   connectCount += 1;
   if (process.env.NODE_ENV !== 'production' && connectCount <= 3) {
     console.log(`✅ PostgreSQL pool socket ${connectCount} opened (${isPooler ? 'pooler' : 'direct'})`);

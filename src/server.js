@@ -1,10 +1,12 @@
-// NOTE: the process is intentionally NOT pinned to a timezone. The DB mixes
-// naive `timestamp` columns with two conventions — slot_time/scheduled_at hold
-// IST wall-clock, while created_at/updated_at/etc. hold UTC wall-clock — and
-// node-pg parses ALL naive columns with the single process TZ, so no one TZ is
-// correct for both. Node stays UTC (matching the UTC-naive + timestamptz set);
-// every IST-specific derivation is made explicit instead (src/utils/date.js
-// istDateKey/istYMD, AT TIME ZONE in SQL, and the +05:30 anchor in the EXIF gate).
+// Pin the process to IST. Safe as of migration 036: every DB timestamp is now
+// `timestamptz`, so node-pg returns absolute instants regardless of process TZ
+// (no more naive-column ambiguity). Pinning to Asia/Kolkata makes all local Date
+// methods on those instants — getHours/getDate for crew shift & slot windows,
+// and toLocale* in notifications/certificates — render in IST. Writes stay
+// correct via the IST DB session (naive slot strings cast to timestamptz as IST).
+// Must be the first executable line, before any Date/cron is constructed.
+process.env.TZ = 'Asia/Kolkata';
+
 const app = require('./app');
 const CronService = require('./services/cron.service');
 const { closePool } = require('./config/db');

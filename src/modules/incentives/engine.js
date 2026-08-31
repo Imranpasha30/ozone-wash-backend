@@ -93,7 +93,7 @@ async function existingIncentiveForAgentMonth(agent_id, reason, month) {
   const { rows } = await query(
     `SELECT id FROM incentives
        WHERE agent_id = $1 AND reason = $2
-         AND date_trunc('month', created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') = date_trunc('month', $3::date)
+         AND date_trunc('month', created_at AT TIME ZONE 'Asia/Kolkata') = date_trunc('month', $3::date)
        LIMIT 1`,
     [agent_id, reason, month]
   );
@@ -466,8 +466,8 @@ async function evaluateMonthlyTarget({ agent_id, month }) {
     `SELECT COUNT(*)::int AS cnt FROM jobs
        WHERE assigned_team_id = $1
          AND status = 'completed'
-         AND (completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') >= $2::date
-         AND (completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') <  ($2::date + INTERVAL '1 month')`,
+         AND (completed_at AT TIME ZONE 'Asia/Kolkata') >= $2::date
+         AND (completed_at AT TIME ZONE 'Asia/Kolkata') <  ($2::date + INTERVAL '1 month')`,
     [agent_id, m]
   );
   const cnt = parseInt(rows[0]?.cnt || '0', 10);
