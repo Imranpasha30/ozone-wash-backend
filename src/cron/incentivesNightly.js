@@ -17,6 +17,7 @@
 
 const cron = require('node-cron');
 const { query } = require('../config/db');
+const { istYMD } = require('../utils/date');
 const engine = require('../modules/incentives/engine');
 const repo = require('../modules/incentives/repository');
 const service = require('../modules/incentives/service');
@@ -55,10 +56,15 @@ async function recalcAndEvaluate() {
 
 /* ── 3: month-rollover — freeze prior month's open batches ───────── */
 async function freezePriorMonth() {
-  const today = new Date();
-  if (today.getUTCDate() !== 1) return; // only on the 1st
-  const prior = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1))
-    .toISOString().slice(0, 10);
+  // Gate on the IST day-of-month, NOT getUTCDate(). This cron fires at 03:00 IST;
+  // at that instant UTC is still 21:30 on the LAST day of the prior month, so a
+  // UTC-based "=== 1" check would NEVER be true and the freeze would silently
+  // never run, leaving payout batches perpetually open.
+  const { y, m, d } = istYMD(new Date());
+  if (Number(d) !== 1) return; // only on the 1st (IST)
+  const pm = Number(m) === 1 ? 12 : Number(m) - 1;
+  const py = Number(m) === 1 ? Number(y) - 1 : Number(y);
+  const prior = `${py}-${String(pm).padStart(2, '0')}-01`;
   const { rows } = await query(
     `SELECT id FROM payout_batches WHERE month = $1 AND status = 'open'`,
     [prior]

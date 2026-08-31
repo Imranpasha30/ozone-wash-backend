@@ -18,6 +18,7 @@ const repo = require('./auto-wash.repository');
 const NotificationService = require('../../services/notification.service');
 const { generateAndUploadCertPDF } = require('./auto-wash.pdf');
 const { query } = require('../../config/db');
+const { istDateKey } = require('../../utils/date');
 
 // Best-effort customer lookup for notification stubs.
 // Failures are swallowed — never block the booking/step lifecycle on a notify call.
@@ -578,7 +579,7 @@ async function completeJob(crewId, jobId, body) {
     ev_unit_id: job.ev_unit_id || null,
     qr_token: generateQrToken(),
     certificate_pdf_url: null,                              // populated by certificate-generation job
-    valid_until: validUntil.toISOString().slice(0, 10),
+    valid_until: istDateKey(validUntil),  // IST calendar date shown on the cert / QR
   });
 
   // Render + upload the certificate PDF, then persist the URL. Failures are
@@ -664,7 +665,7 @@ async function createSubscription(customerId, { plan_type, vehicle_ids }) {
     vehicle_ids: vehicle_ids || [],
     washes_per_cycle: plan.washes_per_cycle,
     price_per_cycle_paise: price,
-    next_billing_date: nextBilling.toISOString().slice(0, 10),
+    next_billing_date: istDateKey(nextBilling),  // IST calendar date the next charge is due
     addon_discount_pct: plan.addon_discount_pct,
   });
 }

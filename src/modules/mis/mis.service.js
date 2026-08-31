@@ -28,9 +28,15 @@ const POINTS_TO_RUPEES = 1; // 1 eco-point = ₹1 (per spec)
 
 function defaultRange(from, to) {
   const today = new Date();
-  const toDate = to ? new Date(to) : today;
+  // A caller-supplied 'YYYY-MM-DD' is an IST calendar day. `new Date('YYYY-MM-DD')`
+  // parses as UTC midnight (spec), so anchor to explicit IST day boundaries
+  // (+05:30) — otherwise the window is shifted 5.5h and clips the local day.
+  const dateOnly = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+  const toDate = to
+    ? (dateOnly(to) ? new Date(`${to}T23:59:59.999+05:30`) : new Date(to))
+    : today;
   const fromDate = from
-    ? new Date(from)
+    ? (dateOnly(from) ? new Date(`${from}T00:00:00.000+05:30`) : new Date(from))
     : new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
   return {
     fromIso: fromDate.toISOString(),

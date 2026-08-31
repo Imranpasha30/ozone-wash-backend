@@ -19,15 +19,18 @@
  */
 
 const { query, getClient } = require('../../config/db');
+const { istYMD } = require('../../utils/date');
 
 const TIERS = ['platinum', 'gold', 'silver', 'bronze'];
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
+// Month key = 1st of the IST month ('YYYY-MM-01'). Must derive from IST parts,
+// NOT getUTC*/toISOString — near IST midnight on a month edge the UTC month is
+// still the previous one, which would misfile accruals into the wrong payout
+// batch. This one helper backs every monthKey/batch lookup in the engine.
 const firstOfMonth = (d = new Date()) => {
-  const dt = new Date(d);
-  return new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), 1))
-    .toISOString()
-    .slice(0, 10);
+  const { y, m } = istYMD(d);
+  return `${y}-${m}-01`;
 };
 
 const monthKey = (d = new Date()) => firstOfMonth(d);
@@ -90,7 +93,7 @@ async function existingIncentiveForAgentMonth(agent_id, reason, month) {
   const { rows } = await query(
     `SELECT id FROM incentives
        WHERE agent_id = $1 AND reason = $2
-         AND date_trunc('month', created_at) = date_trunc('month', $3::date)
+         AND date_trunc('month', created_at AT TIME ZONE 'Asia/Kolkata') = date_trunc('month', $3::date)
        LIMIT 1`,
     [agent_id, reason, month]
   );
@@ -463,8 +466,8 @@ async function evaluateMonthlyTarget({ agent_id, month }) {
     `SELECT COUNT(*)::int AS cnt FROM jobs
        WHERE assigned_team_id = $1
          AND status = 'completed'
-         AND completed_at >= $2::date
-         AND completed_at <  ($2::date + INTERVAL '1 month')`,
+         AND (completed_at AT TIME ZONE 'Asia/Kolkata') >= $2::date
+         AND (completed_at AT TIME ZONE 'Asia/Kolkata') <  ($2::date + INTERVAL '1 month')`,
     [agent_id, m]
   );
   const cnt = parseInt(rows[0]?.cnt || '0', 10);

@@ -267,7 +267,10 @@ const BookingService = {
       const tankList = tanks || [{ tank_size_litres: data.tank_size_litres }];
       const need = await SchedulingService.durationFor(tankList);
       durationMin = need.duration_min;
-      releaseSlotLock = await SchedulingService.acquireSlotLock(String(data.slot_time).slice(0, 10));
+      // Key the per-day advisory lock via the SAME toDateKey that capacityOk uses
+      // (IST-aware under the TZ pin) so the lock and the capacity window always
+      // agree on which calendar day this slot belongs to.
+      releaseSlotLock = await SchedulingService.acquireSlotLock(SchedulingService.toDateKey(data.slot_time));
       const cap = await SchedulingService.capacityOk(data.slot_time, durationMin, 'tank');
       if (!cap.ok) {
         throw { status: 409, message: `That slot just filled up — all ${cap.vans} crew(s) are booked for this window. Pick another slot.` };

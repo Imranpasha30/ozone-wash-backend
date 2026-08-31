@@ -9,6 +9,7 @@ const express = require('express');
 const PricingService = require('../../services/pricing');
 const { authenticate, requireRole } = require('../../middleware/auth.middleware');
 const { sendSuccess, sendError } = require('../../utils/response');
+const { istDateKey } = require('../../utils/date');
 const { adminRouter: incentiveAdminRouter } = require('../incentives/routes');
 const db = require('../../config/db');
 const AuthRepository = require('../auth/auth.repository');
@@ -226,7 +227,9 @@ router.get('/customers/:id/stats', adminOnly, async (req, res, next) => {
 // All money in paise. Net = gross_in − refunds − crew_payouts.
 router.get('/ledger', adminOnly, async (req, res, next) => {
   try {
-    const iso = (d) => d.toISOString().slice(0, 10);
+    // IST calendar dates — toISOString() would give the UTC day, dropping today's
+    // IST payments from the default window for ~5.5h after IST midnight.
+    const iso = (d) => istDateKey(d);
     const now = new Date();
     const to = String(req.query.to || iso(now)).slice(0, 10);
     const from = String(req.query.from || iso(new Date(now.getTime() - 29 * 86400000))).slice(0, 10);

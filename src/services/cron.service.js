@@ -14,7 +14,9 @@ const CronService = {
   start: () => {
     console.log('⏰ Starting cron jobs...');
 
-    // Run every day at 9 AM
+    // Run every day at 9 AM IST. Explicit timezone so this wall-clock anchor is
+    // immune to the host clock (matches the ecoscore 02:00 / incentives 03:00
+    // crons). The process TZ pin also covers this, but being explicit is safest.
     cron.schedule('0 9 * * *', async () => {
       console.log('⏰ Running daily cron jobs...');
       await CronService.checkAmcRenewals();
@@ -28,7 +30,7 @@ const CronService = {
         `DELETE FROM in_app_notifications
           WHERE read OR created_at < NOW() - INTERVAL '30 days'`
       ).catch(() => {});
-    });
+    }, { timezone: 'Asia/Kolkata' });
 
     // SLA breach check every 30 minutes
     cron.schedule('*/30 * * * *', async () => {

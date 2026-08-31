@@ -2,6 +2,7 @@
 const jwt = require('jsonwebtoken');
 const AuthRepository = require('./auth.repository');
 const NotificationService = require('../../services/notification.service');
+const { istDateKey } = require('../../utils/date');
 
 /**
  * Demo / reviewer bypass accounts. Each entry maps a static phone to a static
@@ -87,7 +88,7 @@ async function ensureAmcContract(user_id, planType) {
         amount_paise, payment_status, tank_ids)
      VALUES ($1, $2, $3::date, $4::date, 'active', $5, 'paid', '[]'::jsonb)
      RETURNING id`,
-    [user_id, planType, today.toISOString().slice(0, 10), endDate.toISOString().slice(0, 10), amount]
+    [user_id, planType, istDateKey(today), istDateKey(endDate), amount]
   );
   return rows[0].id;
 }
