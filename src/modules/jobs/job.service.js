@@ -40,6 +40,24 @@ const assertVanCheck = async (agentId, job) => {
   }
 };
 
+// A field agent may VIEW + WORK a job if it's assigned to them individually
+// (assigned_team_id) OR to a field team they're an active member of
+// (assigned_field_team_id). Team-assigned jobs are shared by every member with
+// the same single job row (same progress). Used by all field-team action gates.
+const agentCanWorkJob = async (job, agentId) => {
+  if (!agentId || !job) return false;
+  if (job.assigned_team_id === agentId) return true;
+  if (job.assigned_field_team_id) {
+    const { rows } = await db.query(
+      `SELECT 1 FROM field_team_members
+        WHERE team_id = $1 AND agent_id = $2 AND is_active = TRUE LIMIT 1`,
+      [job.assigned_field_team_id, agentId]
+    );
+    return rows.length > 0;
+  }
+  return false;
+};
+
 const JobService = {
 
   // Get all jobs (admin)
@@ -60,7 +78,7 @@ const JobService = {
     }
 
     // Field team can only see their own assigned jobs
-    if (userRole === 'field_team' && job.assigned_team_id !== userId) {
+    if (userRole === 'field_team' && !(await agentCanWorkJob(job, userId))) {
       throw { status: 403, message: 'Access denied.' };
     }
 
@@ -158,7 +176,7 @@ const JobService = {
       throw { status: 404, message: 'Job not found.' };
     }
 
-    if (job.assigned_team_id !== teamId) {
+    if (!(await agentCanWorkJob(job, teamId))) {
       throw { status: 403, message: 'This job is not assigned to you.' };
     }
 
@@ -182,7 +200,7 @@ const JobService = {
   markEnRoute: async (jobId, teamId) => {
     const job = await JobRepository.findById(jobId);
     if (!job) throw { status: 404, message: 'Job not found.' };
-    if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
+    if (!(await agentCanWorkJob(job, teamId))) throw { status: 403, message: 'This job is not assigned to you.' };
     if (job.status !== 'scheduled') throw { status: 400, message: `Cannot mark en-route with status: ${job.status}` };
     await assertVanCheck(teamId, job);
     // Keep today's departure if already logged; a stale one from a previous
@@ -260,7 +278,7 @@ const JobService = {
   generateStartOtp: async (jobId, teamId) => {
     const job = await JobRepository.findById(jobId);
     if (!job) throw { status: 404, message: 'Job not found.' };
-    if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
+    if (!(await agentCanWorkJob(job, teamId))) throw { status: 403, message: 'This job is not assigned to you.' };
     if (job.status !== 'scheduled') throw { status: 400, message: `Cannot generate start OTP for a job with status: ${job.status}` };
 
     await assertVanCheck(teamId, job);
@@ -283,7 +301,7 @@ const JobService = {
   verifyStartOtp: async (jobId, teamId, otp, gps = {}) => {
     const job = await JobRepository.findById(jobId);
     if (!job) throw { status: 404, message: 'Job not found.' };
-    if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
+    if (!(await agentCanWorkJob(job, teamId))) throw { status: 403, message: 'This job is not assigned to you.' };
     if (job.status !== 'scheduled') throw { status: 400, message: `Cannot verify start OTP for a job with status: ${job.status}` };
     if (!job.start_otp) throw { status: 400, message: 'Start OTP has not been generated yet.' };
 
@@ -371,7 +389,7 @@ const JobService = {
   generateEndOtp: async (jobId, teamId) => {
     const job = await JobRepository.findById(jobId);
     if (!job) throw { status: 404, message: 'Job not found.' };
-    if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
+    if (!(await agentCanWorkJob(job, teamId))) throw { status: 403, message: 'This job is not assigned to you.' };
     if (job.status !== 'in_progress') throw { status: 400, message: 'Job must be in progress to generate end OTP.' };
 
     if (job.job_type === 'tank_cleaning') {
@@ -410,7 +428,7 @@ const JobService = {
   verifyEndOtp: async (jobId, teamId, otp) => {
     const job = await JobRepository.findById(jobId);
     if (!job) throw { status: 404, message: 'Job not found.' };
-    if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
+    if (!(await agentCanWorkJob(job, teamId))) throw { status: 403, message: 'This job is not assigned to you.' };
     if (job.status !== 'in_progress') throw { status: 400, message: 'Job must be in progress to verify end OTP.' };
     if (!job.end_otp_satisfied && !job.end_otp_unsatisfied) throw { status: 400, message: 'End OTP has not been generated yet.' };
 
@@ -463,7 +481,7 @@ const JobService = {
     if (!job) throw { status: 404, message: 'Job not found.' };
 
     // Field team can only transfer their own jobs
-    if (userRole === 'field_team' && job.assigned_team_id !== userId) {
+    if (userRole === 'field_team' && !(await agentCanWorkJob(job, userId))) {
       throw { status: 403, message: 'This job is not assigned to you.' };
     }
 
@@ -607,7 +625,7 @@ const JobService = {
   raiseConcern: async (jobId, teamId, message) => {
     const job = await JobRepository.findById(jobId);
     if (!job) throw { status: 404, message: 'Job not found.' };
-    if (job.assigned_team_id !== teamId) throw { status: 403, message: 'This job is not assigned to you.' };
+    if (!(await agentCanWorkJob(job, teamId))) throw { status: 403, message: 'This job is not assigned to you.' };
     if (!message?.trim()) throw { status: 400, message: 'Concern message is required.' };
     const updated = await JobRepository.raiseConcern(jobId, teamId, message.trim());
     if (!updated) throw { status: 400, message: 'Could not raise concern. Job not found or not assigned to you.' };

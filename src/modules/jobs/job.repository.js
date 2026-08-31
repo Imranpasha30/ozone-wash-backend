@@ -477,7 +477,7 @@ const JobRepository = {
         concern_resolved  = false,
         concern_raised_by = $2,
         updated_at        = NOW()
-       WHERE id = $3 AND assigned_team_id = $2
+       WHERE id = $3
        RETURNING *`,
       [message, teamId, jobId]
     );
