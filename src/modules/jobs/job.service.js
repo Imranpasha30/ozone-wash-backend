@@ -40,22 +40,59 @@ const assertVanCheck = async (agentId, job) => {
   }
 };
 
-// A field agent may VIEW + WORK a job if it's assigned to them individually
-// (assigned_team_id) OR to a field team they're an active member of
-// (assigned_field_team_id). Team-assigned jobs are shared by every member with
-// the same single job row (same progress). Used by all field-team action gates.
-const agentCanWorkJob = async (job, agentId) => {
+const agentIsActiveMember = async (fieldTeamId, agentId) => {
+  if (!fieldTeamId || !agentId) return false;
+  const { rows } = await db.query(
+    `SELECT 1 FROM field_team_members
+      WHERE team_id = $1 AND agent_id = $2 AND is_active = TRUE LIMIT 1`,
+    [fieldTeamId, agentId]
+  );
+  return rows.length > 0;
+};
+
+// VIEW: the assigned owner/leader OR any active member of the team — the whole
+// crew can SEE a team job and its shared live progress.
+const agentCanViewJob = async (job, agentId) => {
   if (!agentId || !job) return false;
   if (job.assigned_team_id === agentId) return true;
-  if (job.assigned_field_team_id) {
-    const { rows } = await db.query(
-      `SELECT 1 FROM field_team_members
-        WHERE team_id = $1 AND agent_id = $2 AND is_active = TRUE LIMIT 1`,
-      [job.assigned_field_team_id, agentId]
-    );
-    return rows.length > 0;
-  }
-  return false;
+  return agentIsActiveMember(job.assigned_field_team_id, agentId);
+};
+
+// WORK: the assigned owner/leader by default. A member can work it ONLY if the
+// leader/admin DELEGATED it — this specific job, or the whole team's day (when
+// the leader is absent) — without reassigning the job. Delegations are additive.
+const agentCanWorkJob = async (job, agentId) => {
+  if (!agentId || !job) return false;
+  if (job.assigned_team_id === agentId) return true;           // owner / leader
+  if (!job.assigned_field_team_id) return false;
+  const SchedulingService = require('../../services/scheduling.service');
+  const dateKey = SchedulingService.toDateKey(job.scheduled_at);
+  const { rows } = await db.query(
+    `SELECT 1 FROM crew_delegations
+      WHERE delegate_agent_id = $1
+        AND ( job_id = $2 OR (date = $3 AND team_id = $4) )
+      LIMIT 1`,
+    [agentId, job.id, dateKey, job.assigned_field_team_id]
+  );
+  return rows.length > 0;
+};
+
+// Current delegations covering a job (this job + the team's day), with names.
+const delegatesForJob = async (job) => {
+  if (!job || !job.assigned_field_team_id) return [];
+  const SchedulingService = require('../../services/scheduling.service');
+  const dateKey = SchedulingService.toDateKey(job.scheduled_at);
+  const { rows } = await db.query(
+    `SELECT d.id, d.delegate_agent_id, d.job_id, d.date, u.name, u.phone
+       FROM crew_delegations d JOIN users u ON u.id = d.delegate_agent_id
+      WHERE d.job_id = $1 OR (d.date = $2 AND d.team_id = $3)
+      ORDER BY d.created_at DESC`,
+    [job.id, dateKey, job.assigned_field_team_id]
+  );
+  return rows.map((r) => ({
+    id: r.id, agent_id: r.delegate_agent_id, name: r.name, phone: r.phone,
+    scope: r.job_id ? 'job' : 'day', date: r.date,
+  }));
 };
 
 const JobService = {
@@ -77,14 +114,22 @@ const JobService = {
       throw { status: 404, message: 'Job not found.' };
     }
 
-    // Field team can only see their own assigned jobs
-    if (userRole === 'field_team' && !(await agentCanWorkJob(job, userId))) {
+    // Field team: any active crew member can VIEW the team's job.
+    if (userRole === 'field_team' && !(await agentCanViewJob(job, userId))) {
       throw { status: 403, message: 'Access denied.' };
     }
 
     // Customer can only see their own jobs
     if (userRole === 'customer' && job.customer_id !== userId) {
       throw { status: 403, message: 'Access denied.' };
+    }
+
+    // Tell the field UI who can WORK it (leader/delegate) + current delegates,
+    // so members see it read-only and the leader gets the delegate control.
+    if (userRole === 'field_team' || userRole === 'admin') {
+      job.can_work = userRole === 'admin' ? true : await agentCanWorkJob(job, userId);
+      job.is_leader = job.assigned_team_id === userId;
+      job.delegates = await delegatesForJob(job);
     }
 
     return job;
@@ -496,6 +541,76 @@ const JobService = {
     // Same crew guard as assign/approve — the destination crew can't be
     // double-booked or unavailable (unless opts.force overrides).
     return await JobService._guardedAssign(job, newTeamId, opts, () => JobRepository.transferJob(jobId, newTeamId, reason));
+  },
+
+  // ── Duty delegation (leader → member) ────────────────────────────────────
+
+  // Active members of the job's team (excluding the leader) — the pool the
+  // leader can delegate to.
+  getTeamMembersForJob: async (jobId, actor) => {
+    const job = await JobRepository.findById(jobId);
+    if (!job || !job.assigned_field_team_id) return [];
+    if (actor.role !== 'admin' && !(await agentCanViewJob(job, actor.id))) {
+      throw { status: 403, message: 'Access denied.' };
+    }
+    const { rows } = await db.query(
+      `SELECT u.id, u.name, u.phone, m.role
+         FROM field_team_members m JOIN users u ON u.id = m.agent_id
+        WHERE m.team_id = $1 AND m.is_active = TRUE AND u.id <> $2
+        ORDER BY u.name ASC NULLS LAST, u.phone ASC`,
+      [job.assigned_field_team_id, job.assigned_team_id]
+    );
+    return rows;
+  },
+
+  // Leader (or admin) hands the duty to a member — for this job, or the whole
+  // team's day. Additive; the leader keeps access. opts.scope: 'job' | 'day'.
+  delegateJob: async (jobId, delegateAgentId, actor, opts = {}) => {
+    const job = await JobRepository.findById(jobId);
+    if (!job) throw { status: 404, message: 'Job not found.' };
+    if (!job.assigned_field_team_id) throw { status: 400, message: 'This job is not assigned to a team.' };
+    if (actor.role !== 'admin' && job.assigned_team_id !== actor.id) {
+      throw { status: 403, message: 'Only the team leader (or an admin) can delegate this job.' };
+    }
+    if (!(await agentIsActiveMember(job.assigned_field_team_id, delegateAgentId))) {
+      throw { status: 400, message: 'That person is not an active member of this crew.' };
+    }
+    const SchedulingService = require('../../services/scheduling.service');
+    const scope = opts.scope === 'day' ? 'day' : 'job';
+    if (scope === 'day') {
+      const dateKey = SchedulingService.toDateKey(job.scheduled_at);
+      const ex = await db.query(
+        `SELECT id FROM crew_delegations WHERE team_id=$1 AND delegate_agent_id=$2 AND date=$3`,
+        [job.assigned_field_team_id, delegateAgentId, dateKey]);
+      if (ex.rows[0]) return { id: ex.rows[0].id, scope: 'day', date: dateKey };
+      const { rows } = await db.query(
+        `INSERT INTO crew_delegations (team_id, delegate_agent_id, date, note, created_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        [job.assigned_field_team_id, delegateAgentId, dateKey, opts.note || null, actor.id || null]);
+      return { id: rows[0].id, scope: 'day', date: dateKey };
+    }
+    const ex = await db.query(
+      `SELECT id FROM crew_delegations WHERE job_id=$1 AND delegate_agent_id=$2`, [jobId, delegateAgentId]);
+    if (ex.rows[0]) return { id: ex.rows[0].id, scope: 'job' };
+    const { rows } = await db.query(
+      `INSERT INTO crew_delegations (team_id, delegate_agent_id, job_id, note, created_by)
+       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [job.assigned_field_team_id, delegateAgentId, jobId, opts.note || null, actor.id || null]);
+    return { id: rows[0].id, scope: 'job' };
+  },
+
+  // Revoke a delegation — leader of that team or admin.
+  revokeDelegation: async (delegationId, actor) => {
+    const { rows } = await db.query(
+      `SELECT d.id, t.leader_id FROM crew_delegations d
+         JOIN field_teams t ON t.id = d.team_id WHERE d.id = $1`, [delegationId]);
+    const d = rows[0];
+    if (!d) throw { status: 404, message: 'Delegation not found.' };
+    if (actor.role !== 'admin' && d.leader_id !== actor.id) {
+      throw { status: 403, message: 'Only the team leader (or an admin) can revoke this.' };
+    }
+    await db.query(`DELETE FROM crew_delegations WHERE id = $1`, [delegationId]);
+    return { removed: true };
   },
 
   // Get list of all field team members (admin — for assignment dropdown)

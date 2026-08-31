@@ -353,6 +353,53 @@ const JobController = {
     }
   },
 
+  // ── Duty delegation (leader → member) ─────────────────────────────────
+
+  // GET /api/v1/jobs/:id/team-members — members the leader can delegate to
+  getJobTeamMembers: async (req, res, next) => {
+    try {
+      const members = await JobService.getTeamMembersForJob(req.params.id, { id: req.user.id, role: req.user.role });
+      return sendSuccess(res, { members });
+    } catch (err) {
+      if (err?.status) return sendError(res, err.message, err.status);
+      next(err);
+    }
+  },
+
+  // POST /api/v1/jobs/:id/delegate  { agent_id, scope?: 'job'|'day', note? }
+  delegateJob: async (req, res, next) => {
+    try {
+      const { agent_id, scope, note } = req.body || {};
+      if (!agent_id) return sendError(res, 'agent_id is required', 400);
+      const result = await JobService.delegateJob(
+        req.params.id, agent_id, { id: req.user.id, role: req.user.role }, { scope, note });
+      // Notify the delegated member.
+      JobRepository.findById(req.params.id).then((fullJob) => {
+        if (fullJob) NotificationService.notifyUser(
+          { id: agent_id },
+          '🤝 Job duty delegated to you',
+          scope === 'day' ? 'You’ve been asked to cover your team’s jobs for the day.' : 'You’ve been asked to handle a job for your team.',
+          { job_id: req.params.id, type: 'duty_delegated' }
+        ).catch(() => {});
+      }).catch(() => {});
+      return sendSuccess(res, result, scope === 'day' ? 'Duty delegated for the day.' : 'Duty delegated for this job.');
+    } catch (err) {
+      if (err?.status) return sendError(res, err.message, err.status);
+      next(err);
+    }
+  },
+
+  // DELETE /api/v1/jobs/:id/delegate/:delegationId
+  revokeDelegation: async (req, res, next) => {
+    try {
+      const result = await JobService.revokeDelegation(req.params.delegationId, { id: req.user.id, role: req.user.role });
+      return sendSuccess(res, result, 'Delegation removed.');
+    } catch (err) {
+      if (err?.status) return sendError(res, err.message, err.status);
+      next(err);
+    }
+  },
+
   // ── Available Jobs & Requests ─────────────────────────────────────────
 
   // GET /api/v1/jobs/available (field team)

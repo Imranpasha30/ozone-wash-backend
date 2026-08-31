@@ -108,6 +108,11 @@ router.get('/customer-alerts', authenticate, requireRole('customer'), JobControl
 // Transfer (field team or admin)
 router.post('/:id/transfer', authenticate, requireRole('field_team', 'admin'), transferValidation, JobController.transferJob);
 
+// Duty delegation (leader → member): who can I delegate to, delegate, revoke
+router.get('/:id/team-members', authenticate, requireRole('field_team', 'admin'), JobController.getJobTeamMembers);
+router.post('/:id/delegate', authenticate, requireRole('field_team', 'admin'), JobController.delegateJob);
+router.delete('/:id/delegate/:delegationId', authenticate, requireRole('field_team', 'admin'), JobController.revokeDelegation);
+
 // Conflict detection & concerns
 router.get('/conflict-check', authenticate, requireRole('admin', 'field_team'), JobController.checkConflict);
 router.post('/:id/raise-concern', authenticate, requireRole('field_team'), JobController.raiseConcern);
