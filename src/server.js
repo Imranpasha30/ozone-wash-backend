@@ -1,11 +1,10 @@
-// Pin the whole process to India Standard Time BEFORE anything constructs a Date
-// or registers a node-cron schedule. The server runs on Railway (UTC); this is an
-// India-only business, so all local Date methods, naive slot-time parsing, crew
-// shift/slot windows, wall-clock cron anchors, and the EXIF liveness gate must
-// resolve in IST. Must stay the first executable line. See src/utils/date.js for
-// the business date-key helpers that cover the toISOString() (always-UTC) cases.
-process.env.TZ = 'Asia/Kolkata';
-
+// NOTE: the process is intentionally NOT pinned to a timezone. The DB mixes
+// naive `timestamp` columns with two conventions — slot_time/scheduled_at hold
+// IST wall-clock, while created_at/updated_at/etc. hold UTC wall-clock — and
+// node-pg parses ALL naive columns with the single process TZ, so no one TZ is
+// correct for both. Node stays UTC (matching the UTC-naive + timestamptz set);
+// every IST-specific derivation is made explicit instead (src/utils/date.js
+// istDateKey/istYMD, AT TIME ZONE in SQL, and the +05:30 anchor in the EXIF gate).
 const app = require('./app');
 const CronService = require('./services/cron.service');
 const { closePool } = require('./config/db');

@@ -140,8 +140,20 @@ router.post(
         const exif = await exifr.parse(file.buffer, { gps: true, pick: ['DateTimeOriginal', 'CreateDate', 'latitude', 'longitude'] });
         const taken = exif?.DateTimeOriginal || exif?.CreateDate;
         if (taken) {
-          exifTakenAt = new Date(taken).toISOString();
-          const ageMin = (Date.now() - new Date(taken).getTime()) / 60000;
+          // EXIF DateTimeOriginal is a NAIVE wall-clock (no zone). exifr renders
+          // it into a Date using the process TZ; read those wall-clock components
+          // back (TZ-independent — build-local + read-local cancel) and anchor
+          // them to IST (+05:30), since capture is India-only. Without this the
+          // liveness gate is defeated: a UTC process reads an IST capture as
+          // ~5.5h in the FUTURE, so stale gallery photos slip through.
+          const t = new Date(taken);
+          const pad = (n) => String(n).padStart(2, '0');
+          const takenMs = new Date(
+            `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}` +
+            `T${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}+05:30`,
+          ).getTime();
+          exifTakenAt = new Date(takenMs).toISOString();
+          const ageMin = (Date.now() - takenMs) / 60000;
           if (ageMin > 10) {
             return sendError(res, `Photo rejected: EXIF timestamp is ${Math.round(ageMin)} min old — capture a live photo, gallery images are not allowed.`, 400);
           }
