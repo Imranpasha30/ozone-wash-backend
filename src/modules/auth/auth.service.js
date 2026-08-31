@@ -45,6 +45,13 @@ const buildBypassMap = () => {
   // review sign-in), independent of any env config. Set last so it is
   // authoritative for this number. Plain customer role, no elevated access.
   map['9999999999'] = { otp: '999999', role: 'customer', name: 'App Review' };
+  // Built-in CREW (field agent) review accounts — fixed phone + OTP for Play /
+  // Apple review of the field-team app. Indian mobiles must start 6-9, so these
+  // use repeated 6/7/8 + a 9-number (1xxx/2xxx/3xxx aren't valid numbers).
+  map['6666666666'] = { otp: '666666', role: 'field_team', name: 'Review Crew 1' };
+  map['7777777777'] = { otp: '777777', role: 'field_team', name: 'Review Crew 2' };
+  map['8888888888'] = { otp: '888888', role: 'field_team', name: 'Review Crew 3' };
+  map['9000000000'] = { otp: '900000', role: 'field_team', name: 'Review Crew 4' };
   return map;
 };
 
