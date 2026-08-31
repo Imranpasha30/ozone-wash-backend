@@ -33,6 +33,25 @@ const isConfigured = !!(
   !ACCOUNT_ID.startsWith('your-') && !ACCESS_KEY.startsWith('your-')
 );
 
+// A public base is unusable if it's missing or still carries a placeholder
+// pattern copied from .env.example (pub-xxxxx / pub-XXXX… / your- / demo- / <…>).
+// When that happens with REAL credentials, uploads would silently succeed but
+// return URLs that resolve to a Cloudflare 401 page — nothing renders for the
+// crew, admin, or on certificates. We refuse the upload instead (see below).
+function isPlaceholderBase(u) {
+  if (!u) return true;
+  return /pub-x{3,}|X{4,}|your-|demo-placeholder|example\.com|[<>]/i.test(u);
+}
+
+if (isConfigured && isPlaceholderBase(PUBLIC_BASE)) {
+  console.error(
+    `[R2 CONFIG ERROR] R2 credentials are set but R2_PUBLIC_BASE_URL / R2_PUBLIC_URL ` +
+    `is missing or a placeholder ("${PUBLIC_BASE || 'unset'}"). Uploaded files will get ` +
+    `UNREACHABLE URLs. Set it to the bucket's real public dev URL (https://pub-<hash>.r2.dev). ` +
+    `Uploads are being REJECTED until this is fixed.`
+  );
+}
+
 // Lazy-built client so loading this module never throws when R2 isn't set up
 let _client = null;
 function getClient() {
@@ -138,6 +157,15 @@ async function uploadBuffer(buffer, { key, contentType } = {}) {
         ? `${PUBLIC_BASE}/${finalKey}`
         : `https://demo-placeholder.ozonewash.in/${finalKey}`,
     };
+  }
+
+  // Fail loudly BEFORE uploading rather than persisting a URL nobody can open.
+  // Guards against a misconfigured deploy (real creds + placeholder public base).
+  if (isPlaceholderBase(PUBLIC_BASE)) {
+    throw new Error(
+      'R2 misconfigured: R2_PUBLIC_BASE_URL is missing or a placeholder — refusing to ' +
+      'store a file with an unreachable URL. Set it to the bucket\'s real https://pub-<hash>.r2.dev URL.'
+    );
   }
 
   await getClient().send(new PutObjectCommand({
