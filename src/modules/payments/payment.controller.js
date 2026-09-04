@@ -199,6 +199,26 @@ const settleByOrderId = async (orderId, paymentId, gateway = 'razorpay') => {
     PaymentLedger.markCaptured(orderId, { paymentId, gateway });
     issueAmcInvoice(c.rows[0].id, { gateway, payment_id: paymentId });
     console.log(`✅ [gw:${gateway}] AMC ${c.rows[0].id} settled via capture`);
+    return;
+  }
+
+  // Finally, an auto-wash (car wash) job — keyed on gateway_order_id, not a
+  // bookings row. Same atomic off-'paid' guard so a late callback is idempotent.
+  const w = await db.query(
+    `UPDATE jobs
+        SET payment_status = 'paid',
+            gateway_payment_id = COALESCE($2, gateway_payment_id),
+            payment_gateway = COALESCE($3, payment_gateway),
+            payment_collected_at = NOW(),
+            payment_collected_method = COALESCE(payment_collected_method, 'online'),
+            updated_at = NOW()
+      WHERE gateway_order_id = $1 AND job_type = 'auto_wash' AND payment_status <> 'paid'
+      RETURNING id`,
+    [orderId, paymentId, gateway]
+  );
+  if (w.rows.length) {
+    PaymentLedger.markCaptured(orderId, { paymentId, gateway });
+    console.log(`✅ [gw:${gateway}] auto-wash job ${w.rows[0].id} settled via capture`);
   }
 };
 

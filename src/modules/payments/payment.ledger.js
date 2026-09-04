@@ -14,16 +14,16 @@ const PaymentLedger = {
   // Append-only lifecycle event. THE authoritative money-movement timeline
   // (inflow + outflow + state markers). Best-effort — never breaks the flow.
   recordEvent: async ({
-    bookingId, contractId, orderId, gateway, eventType,
+    bookingId, contractId, jobId, orderId, gateway, eventType,
     direction = 'neutral', amountPaise = 0, status, gatewayRef, note, metadata, createdBy,
   } = {}) => {
     if (!eventType) return;
     try {
       await db.query(
-        `INSERT INTO payment_events (booking_id, amc_contract_id, order_id, gateway,
+        `INSERT INTO payment_events (booking_id, amc_contract_id, job_id, order_id, gateway,
            event_type, direction, amount_paise, status, gateway_ref, note, metadata, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)`,
-        [bookingId || null, contractId || null, orderId || null, gateway || null,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)`,
+        [bookingId || null, contractId || null, jobId || null, orderId || null, gateway || null,
          eventType, direction, Math.round(Number(amountPaise) || 0), status || null,
          gatewayRef || null, note || null, JSON.stringify(metadata || {}), createdBy || null]
       );
@@ -31,20 +31,20 @@ const PaymentLedger = {
   },
 
   // At create-order: open a 'created' row for this gateway order id.
-  recordCreated: async ({ userId, bookingId, contractId, orderId, amountPaise, method, gateway, gstPaise }) => {
+  recordCreated: async ({ userId, bookingId, contractId, jobId, orderId, amountPaise, method, gateway, gstPaise }) => {
     if (!orderId) return;
     try {
       await db.query(
-        `INSERT INTO payments (user_id, booking_id, amc_contract_id, razorpay_order_id,
+        `INSERT INTO payments (user_id, booking_id, amc_contract_id, job_id, razorpay_order_id,
            amount_paise, currency, method, status, gst_paise, notes)
-         VALUES ($1,$2,$3,$4,$5,'INR',$6,'created',$7,$8)`,
-        [userId || null, bookingId || null, contractId || null, orderId,
+         VALUES ($1,$2,$3,$4,$5,$6,'INR',$7,'created',$8,$9)`,
+        [userId || null, bookingId || null, contractId || null, jobId || null, orderId,
          amountPaise || 0, method || gateway || null, gstPaise || 0,
          JSON.stringify({ gateway: gateway || null })]
       );
     } catch (e) { console.warn('[ledger] recordCreated failed:', e?.message); }
     PaymentLedger.recordEvent({
-      bookingId, contractId, orderId, gateway, eventType: 'order_created',
+      bookingId, contractId, jobId, orderId, gateway, eventType: 'order_created',
       direction: 'in', amountPaise, status: 'created', note: method || null,
     });
   },
@@ -62,13 +62,13 @@ const PaymentLedger = {
                 captured_at = NOW(),
                 notes = COALESCE(notes, '{}'::jsonb) || $4::jsonb
           WHERE razorpay_order_id = $1 AND status <> 'captured'
-          RETURNING amount_paise, booking_id, amc_contract_id`,
+          RETURNING amount_paise, booking_id, amc_contract_id, job_id`,
         [orderId, paymentId || null, signature || null,
          JSON.stringify({ gateway: gateway || null, captured: true })]
       );
       if (rows[0]) {
         PaymentLedger.recordEvent({
-          bookingId: rows[0].booking_id, contractId: rows[0].amc_contract_id,
+          bookingId: rows[0].booking_id, contractId: rows[0].amc_contract_id, jobId: rows[0].job_id,
           orderId, gateway, eventType: 'payment_captured', direction: 'in',
           amountPaise: rows[0].amount_paise, status: 'captured', gatewayRef: paymentId,
         });

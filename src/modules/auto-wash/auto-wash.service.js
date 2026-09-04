@@ -19,6 +19,8 @@ const NotificationService = require('../../services/notification.service');
 const { generateAndUploadCertPDF } = require('./auto-wash.pdf');
 const { query } = require('../../config/db');
 const { istDateKey } = require('../../utils/date');
+const PaymentService = require('../../services/payment.service');
+const PaymentLedger = require('../payments/payment.ledger');
 
 // Best-effort customer lookup for notification stubs.
 // Failures are swallowed — never block the booking/step lifecycle on a notify call.
@@ -273,8 +275,11 @@ async function createBooking({
   customer_id, vehicle_id, package_code, addon_codes = [],
   scheduled_at, location_lat, location_lng, location_address,
   gated_community, notes, subscription_code = null,
+  payment_method = 'online', // 'online' (PayU prepaid) | 'cod'
   additional_stops = [], // [{ vehicle_id, location_address, location_lat, location_lng }]
 }) {
+  // Online = held 'pending' until the gateway confirms; COD = collected on-site.
+  const paymentStatus = payment_method === 'cod' ? 'cod' : 'pending';
   if (!scheduled_at) throw { status: 400, message: 'scheduled_at is required.' };
   if (!location_address?.trim()) throw { status: 400, message: 'Service address is required.' };
 
@@ -315,10 +320,12 @@ async function createBooking({
     base_price_paise:   quote.items.filter(i => i.kind === 'package').reduce((s, i) => s + i.price_paise, 0),
     addons_price_paise: quote.items.filter(i => i.kind === 'addon').reduce((s, i) => s + i.price_paise, 0),
     total_price_paise:  quote.total_paise,
+    payment_status:     paymentStatus,
   });
 
-  // v1: auto-wash is COD-only — Razorpay integration deferred to v1.1.
-  // Booking is held at status='scheduled' awaiting crew assignment + on-site payment.
+  // Online bookings start 'pending' and are paid via PayU right after creation
+  // (see createPaymentOrder/verifyPayment). COD bookings are collected on-site.
+  // Booking is held at status='scheduled' awaiting crew assignment.
   // Fire booking_confirmed notification stub (logs only until Wati templates are live).
   _safeLookupCustomer(customer_id).then((customer) => {
     if (!customer?.phone) return;
@@ -378,6 +385,7 @@ async function createBooking({
       base_price_paise:   stopQuote.items.filter(i => i.kind === 'package').reduce((sum, i) => sum + i.price_paise, 0),
       addons_price_paise: stopQuote.items.filter(i => i.kind === 'addon').reduce((sum, i) => sum + i.price_paise, 0),
       total_price_paise:  stopQuote.total_paise,
+      payment_status:     paymentStatus,
     });
     additionalJobs.push({ job: stopJob, quote: stopQuote });
 
@@ -763,6 +771,70 @@ async function adminAddonAnalytics({ fromDate } = {}) {
   return repo.adminAddonAnalytics({ fromDate });
 }
 
+// ── Online payment (PayU) ───────────────────────────────────────────────
+// Mirrors the tank booking flow but keyed on the auto-wash JOB (car wash has no
+// bookings row). Settlement is primarily server-side via the PayU surl/furl
+// callback (settleByOrderId → auto-wash branch); verify() below is the app's
+// explicit backup path.
+
+// Honor the same ₹1 test-charge override the tank flow uses (PAYMENT_TEST_AMOUNT_PAISE).
+function chargeAmountPaise(realPaise) {
+  const t = Number(process.env.PAYMENT_TEST_AMOUNT_PAISE);
+  if (Number.isFinite(t) && t > 0) return t;
+  return realPaise;
+}
+
+async function customerForPayment(customerId) {
+  try {
+    const { rows } = await query(`SELECT name, phone, email FROM users WHERE id = $1`, [customerId]);
+    return rows[0] || {};
+  } catch { return {}; }
+}
+
+/** Create a payment order for an auto-wash job. Returns the gateway order/params. */
+async function createPaymentOrder({ customer_id, job_id, channel }) {
+  const job = await repo.findAutoWashJobForPayment(job_id, customer_id);
+  if (!job) throw { status: 404, message: 'Car wash booking not found.' };
+  if (job.payment_status === 'paid') throw { status: 409, message: 'This booking is already paid.' };
+  const realPaise = Number(job.total_price_paise) || 0;
+  if (realPaise <= 0) throw { status: 400, message: 'Nothing to pay for this booking.' };
+
+  const customer = await customerForPayment(customer_id);
+  const charge = chargeAmountPaise(realPaise);
+  const order = await PaymentService.createOrder(charge, job_id, customer, { channel });
+
+  await repo.setAutoWashPaymentOrder(job_id, { gateway: order.gateway, orderId: order.order_id });
+  PaymentLedger.recordCreated({
+    userId: customer_id, jobId: job_id, orderId: order.order_id,
+    amountPaise: charge, method: 'online', gateway: order.gateway,
+  }).catch(() => {});
+
+  return { ...order, job_id };
+}
+
+/** Verify a completed auto-wash payment (app backup; the callback also settles). */
+async function verifyAutoWashPayment({ customer_id, job_id, payload }) {
+  const job = await repo.findAutoWashJobForPayment(job_id, customer_id);
+  if (!job) throw { status: 404, message: 'Car wash booking not found.' };
+  if (job.payment_status === 'paid') return { payment_status: 'paid', job_id };
+
+  // Bind the verified payment to THIS job: the signed order id must match.
+  const providedOrderId = payload?.txnid || payload?.razorpay_order_id || null;
+  if (!job.gateway_order_id || !providedOrderId || job.gateway_order_id !== providedOrderId) {
+    throw { status: 400, message: 'Payment does not match this booking.' };
+  }
+
+  const result = PaymentService.verifyPayment(payload); // throws on invalid signature/status
+  const gateway = result.gateway || payload.gateway || job.payment_gateway;
+  const paymentId = result.payment_id || payload.mihpayid || payload.razorpay_payment_id || null;
+
+  const flipped = await repo.markAutoWashJobPaid(job_id, { gateway, paymentId, method: 'online' });
+  if (flipped) {
+    PaymentLedger.markCaptured(job.gateway_order_id, { paymentId, gateway }).catch(() => {});
+  }
+  return { payment_status: 'paid', gateway, job_id };
+}
+
 module.exports = {
   // catalog
   getPackages,
@@ -778,6 +850,9 @@ module.exports = {
   createBooking,
   getBookingById,
   listBookingHistory,
+  // payment
+  createPaymentOrder,
+  verifyAutoWashPayment,
   // crew
   uploadPreInspection,
   startStep,

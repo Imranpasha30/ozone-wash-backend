@@ -100,6 +100,7 @@ router.post('/bookings', authenticate, [
   body('location_lng').optional().isFloat(),
   body('gated_community').optional().isBoolean(),
   body('subscription_code').optional({ nullable: true }).isString(),
+  body('payment_method').optional().isIn(['online', 'cod']),
   validate,
 ], ctrl.createBooking);
 
@@ -107,6 +108,21 @@ router.get('/bookings/history',          authenticate, ctrl.bookingHistory);
 router.get('/bookings/:id', authenticate, [
   param('id').isUUID(), validate,
 ], ctrl.getBookingById);
+
+/* ── Customer: Online payment (PayU) ─────────────────────────────────── */
+// create-order returns { gateway, order_id, payment_url, payment_params, job_id }.
+// Settlement is primarily server-side via the PayU surl/furl callback
+// (settleByOrderId → auto-wash branch); verify is the app's explicit backup.
+router.post('/payments/create-order', authenticate, [
+  body('job_id').isUUID(),
+  body('channel').optional().isString(),
+  validate,
+], ctrl.createPaymentOrder);
+
+router.post('/payments/verify', authenticate, [
+  body('job_id').isUUID(),
+  validate,
+], ctrl.verifyPayment);
 
 /* ── Customer: Subscriptions ─────────────────────────────────────────── */
 

@@ -163,13 +163,13 @@ const AutoWashRepository = {
          scheduled_at, location_lat, location_lng, location_address, notes,
          vehicle_id, service_package, addons_booked, gated_community,
          base_price_paise, addons_price_paise, total_price_paise,
-         subscription_job_id
+         subscription_job_id, payment_status
        ) VALUES (
          NULL, $1, 'scheduled', 'auto_wash', 'vehicle',
          $2, $3, $4, $5, $6,
          $7, $8, $9::jsonb, $10,
          $11, $12, $13,
-         $14
+         $14, $15
        )
        RETURNING *`,
       [
@@ -187,9 +187,50 @@ const AutoWashRepository = {
         job.addons_price_paise,
         job.total_price_paise,
         job.subscription_job_id || null,
+        job.payment_status || 'pending',
       ]
     );
     return rows[0];
+  },
+
+  // ── Auto-wash online payment ────────────────────────────────────────
+  // Load a job for the payment flow, scoped to its owner.
+  findAutoWashJobForPayment: async (jobId, customerId) => {
+    const { rows } = await query(
+      `SELECT id, customer_id, total_price_paise, payment_status, gateway_order_id, payment_gateway
+         FROM jobs WHERE id = $1 AND job_type = 'auto_wash'`,
+      [jobId]
+    );
+    const job = rows[0];
+    if (!job) return null;
+    if (customerId && String(job.customer_id) !== String(customerId)) return null;
+    return job;
+  },
+
+  // Stash the gateway order id on the job so settleByOrderId can find it.
+  setAutoWashPaymentOrder: async (jobId, { gateway, orderId }) => {
+    await query(
+      `UPDATE jobs SET gateway_order_id = $2, payment_gateway = $3, updated_at = NOW()
+         WHERE id = $1 AND job_type = 'auto_wash'`,
+      [jobId, orderId, gateway || null]
+    );
+  },
+
+  // Idempotent paid transition (returns the row only when THIS call flipped it).
+  markAutoWashJobPaid: async (jobId, { gateway, paymentId, method } = {}) => {
+    const { rows } = await query(
+      `UPDATE jobs
+          SET payment_status = 'paid',
+              payment_gateway = COALESCE($3, payment_gateway),
+              gateway_payment_id = COALESCE($2, gateway_payment_id),
+              payment_collected_at = NOW(),
+              payment_collected_method = COALESCE($4, 'online'),
+              updated_at = NOW()
+        WHERE id = $1 AND job_type = 'auto_wash' AND payment_status <> 'paid'
+        RETURNING id`,
+      [jobId, paymentId || null, gateway || null, method || null]
+    );
+    return rows[0] || null;
   },
 
   findAutoWashJobById: async (id) => {

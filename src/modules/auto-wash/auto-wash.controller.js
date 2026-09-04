@@ -82,6 +82,7 @@ const AutoWashController = {
         gated_community: !!req.body.gated_community,
         notes: req.body.notes,
         subscription_code: req.body.subscription_code || null,
+        payment_method: req.body.payment_method === 'cod' ? 'cod' : 'online',
         additional_stops: Array.isArray(req.body.additional_stops) ? req.body.additional_stops : [],
       });
       return sendSuccess(res, result, 'Booking created');
@@ -102,6 +103,39 @@ const AutoWashController = {
       const jobs = await service.listBookingHistory(req.user.id, { limit, offset });
       return sendSuccess(res, { jobs, limit, offset });
     } catch (e) { next(e); }
+  },
+
+  /* ── Online payment (PayU) ────────────────────────────────────────────── */
+
+  // POST /auto-wash/payments/create-order  { job_id, channel? }
+  createPaymentOrder: async (req, res, next) => {
+    try {
+      const order = await service.createPaymentOrder({
+        customer_id: req.user.id,
+        job_id: req.body.job_id,
+        channel: req.body.channel,
+      });
+      return sendSuccess(res, order, 'Payment order created');
+    } catch (e) {
+      if (e?.status) return sendError(res, e.message, e.status);
+      next(e);
+    }
+  },
+
+  // POST /auto-wash/payments/verify  { job_id, ...gatewayPayload }
+  verifyPayment: async (req, res, next) => {
+    try {
+      const { job_id, ...payload } = req.body || {};
+      const result = await service.verifyAutoWashPayment({
+        customer_id: req.user.id,
+        job_id,
+        payload,
+      });
+      return sendSuccess(res, result, 'Payment verified successfully');
+    } catch (e) {
+      if (e?.status) return sendError(res, e.message, e.status);
+      next(e);
+    }
   },
 
   /* ── Field crew flow ──────────────────────────────────────────────────── */
